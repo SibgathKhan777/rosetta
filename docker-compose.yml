@@ -87,6 +87,7 @@ services:
     volumes:
       - ./backend:/app
       - whisper_models:/root/.cache/huggingface
+      - easyocr_models:/root/.EasyOCR
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,3 +102,4 @@ volumes:
   redis_data:
   minio_data:
   whisper_models:
+  easyocr_models:

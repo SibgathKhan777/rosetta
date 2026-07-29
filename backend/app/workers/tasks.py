@@ -8,7 +8,8 @@ import yt_dlp
 
 from app.database import SessionLocal
 from app.models.job import Job, JobResult, JobStatus
-from app.services.media import extract_audio
+from app.services.media import extract_audio, extract_frames
+from app.services.ocr import ocr_frame
 from app.services.progress import upsert_progress
 from app.services.transcription import transcribe_audio
 from app.storage.s3 import upload_file
@@ -16,8 +17,9 @@ from app.storage.s3 import upload_file
 
 def download_job(job_id: str) -> None:
     """Fetch metadata + video via yt-dlp, store the raw media in S3/MinIO,
-    then transcribe the full audio as a single chunk (stage 3 — no
-    splitting/OCR yet; those are chained in here by later stages).
+    transcribe the full audio as a single chunk, then OCR a fixed-interval
+    frame batch (stage 4 — scene-detected frame selection + splitting come
+    in stage 5).
     """
     db = SessionLocal()
     try:
@@ -102,12 +104,33 @@ def download_job(job_id: str) -> None:
 
             result.transcript = transcript
             result.transcript_segments = segments
+            db.commit()
+
+            upsert_progress(db, job.id, "transcription", 100.0)
+            upsert_progress(db, job.id, "ocr", 0.0)
+
+            frames_dir = os.path.join(tmp_dir, "frames")
+            os.makedirs(frames_dir, exist_ok=True)
+            try:
+                frames = extract_frames(downloaded_path, frames_dir, interval_seconds=2.0)
+                ocr_events = []
+                for timestamp, frame_path in frames:
+                    for detection in ocr_frame(frame_path):
+                        detection["timestamp"] = timestamp
+                        ocr_events.append(detection)
+            except Exception as exc:
+                job.status = JobStatus.FAILED.value
+                job.error_message = f"OCR failed: {exc}"[:2000]
+                db.commit()
+                return
+
+            result.ocr_events = ocr_events
 
             job.status = JobStatus.DONE.value
             job.completed_at = datetime.now(timezone.utc)
             db.commit()
 
-            upsert_progress(db, job.id, "transcription", 100.0)
+            upsert_progress(db, job.id, "ocr", 100.0)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
     finally:

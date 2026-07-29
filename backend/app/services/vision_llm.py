@@ -46,12 +46,22 @@ def escalate_frame(image_path: str) -> str:
                     ],
                 }
             ],
-            max_tokens=300,
+            # Generous budget: reasoning models (e.g. Qwen3) inline their
+            # chain-of-thought directly in content wrapped in <think>...</think>
+            # rather than a separate field, and a busy frame (a code editor,
+            # say) needs real room to both reason through it and still emit an
+            # answer afterward. Confirmed directly: 300 was too tight and
+            # truncated mid-reasoning on text-heavy frames, well before the
+            # closing </think>.
+            max_tokens=2048,
         )
         raw = response.choices[0].message.content or ""
-        # Reasoning models (e.g. Qwen3) inline their chain-of-thought in
-        # content wrapped in <think>...</think> rather than a separate field —
-        # confirmed directly against this Groq model's actual response shape.
+        if "<think>" in raw and "</think>" not in raw:
+            # Truncated mid-reasoning (hit max_tokens before finishing) — the
+            # model never got to its actual answer, so there's nothing usable
+            # here. Treat as a failed escalation rather than store raw
+            # chain-of-thought as if it were transcribed text.
+            return ""
         text = _THINK_BLOCK_RE.sub("", raw).strip()
         return "" if text.upper() == "NONE" else text
     except Exception:

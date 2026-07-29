@@ -1,0 +1,75 @@
+flowchart TB
+    subgraph Client["Client Layer"]
+        FE["Next.js Frontend<br/>(paste link, view job progress %, results)"]
+    end
+
+    subgraph API["API Layer (FastAPI)"]
+        AUTH["Auth (JWT)"]
+        SUBMIT["POST /jobs (submit URL)"]
+        STATUS["GET /jobs/:id<br/>(status %, partial + final results)"]
+        CREDITS["Usage/Credit Check<br/>(cost scales with duration)"]
+    end
+
+    subgraph Queue["Queue (Redis + RQ/Celery)"]
+        Q["Job Queue"]
+    end
+
+    subgraph Download["Stage 1: Download & Split"]
+        W1["Worker: Download (yt-dlp)"]
+        SPLIT["Job Splitter<br/>chunk audio into 5-10min segments<br/>+ scene-detect frame candidates"]
+    end
+
+    subgraph Parallel["Stage 2: Parallel Sub-tasks"]
+        direction LR
+        subgraph Audio["Audio chunks (N workers)"]
+            A1["Chunk 1 → Whisper"]
+            A2["Chunk 2 → Whisper"]
+            AN["Chunk N → Whisper"]
+        end
+        subgraph Frames["Frame batches (N workers)"]
+            F1["Batch: EasyOCR<br/>(scene-detected frames only,<br/>not fixed fps)"]
+            ESC["Escalate ONLY top-N<br/>lowest-confidence frames<br/>→ vision-LLM (capped)"]
+        end
+    end
+
+    subgraph Stitch["Stage 3: Stitch & Merge"]
+        STITCHA["Stitch audio chunks<br/>by timestamp offset"]
+        MERGE["Merge transcript + OCR<br/>into timestamped result"]
+    end
+
+    subgraph Storage["Storage"]
+        S3["Object Storage (S3)<br/>video/audio/frames<br/>— TEMPORARY, purged after processing"]
+        PG[("Postgres<br/>users / jobs / job_results /<br/>usage_credits / job_progress")]
+    end
+
+    subgraph External["External Platforms"]
+        EXT["YouTube / Instagram /<br/>TikTok / X / etc."]
+    end
+
+    FE -->|"1. paste URL"| SUBMIT
+    SUBMIT --> AUTH
+    SUBMIT --> CREDITS
+    SUBMIT -->|"2. enqueue"| Q
+    Q --> W1
+    W1 -->|"fetch"| EXT
+    W1 -->|"store temp"| S3
+    W1 --> SPLIT
+    SPLIT -->|"fan out"| A1
+    SPLIT -->|"fan out"| A2
+    SPLIT -->|"fan out"| AN
+    SPLIT -->|"fan out"| F1
+    A1 & A2 & AN --> STITCHA
+    F1 --> ESC
+    STITCHA -->|"progress update"| PG
+    ESC -->|"progress update"| PG
+    STITCHA --> MERGE
+    ESC --> MERGE
+    MERGE -->|"3. write final result"| PG
+    MERGE -->|"delete temp media"| S3
+    FE -->|"4. poll (shows live %)"| STATUS
+    STATUS --> PG
+
+    style S3 fill:#fff3cd,stroke:#856404
+    style EXT fill:#f8d7da,stroke:#721c24
+    style PG fill:#d4edda,stroke:#155724
+    style ESC fill:#e2d6f3,stroke:#4b2e83

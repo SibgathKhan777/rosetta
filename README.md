@@ -61,13 +61,25 @@ something to over-engineer up front.
 ## Build stages
 
 This project was built incrementally, each stage confirmed against a real test video before
-moving to the next:
+moving to the next. All 8 stages are complete and verified end-to-end.
 
 1. docker-compose skeleton + FastAPI auth — **done**
-2. `POST /jobs` + download-only worker (yt-dlp, no processing)
-3. Transcription (single chunk, faster-whisper)
-4. OCR (EasyOCR, single frame batch)
-5. Job splitting + parallel chunk/frame fan-out (ffmpeg + scene detection)
-6. Vision-LLM escalation, capped per job
-7. Progress reporting + Next.js polling UI
-8. Usage credits tracking (billing/Stripe integration is a later phase, not covered here)
+2. `POST /jobs` + download-only worker (yt-dlp, no processing) — **done**
+3. Transcription (single chunk, faster-whisper) — **done**
+4. OCR (EasyOCR, single frame batch) — **done**
+5. Job splitting + parallel chunk/frame fan-out (ffmpeg + scene detection) — **done**
+6. Vision-LLM escalation, capped per job — **done** (code path verified with escalation
+   disabled/no-API-key; a live vision-LLM call was not exercised — no API key was available
+   to test with)
+7. Progress reporting + Next.js polling UI — **done**
+8. Usage credits tracking (billing/Stripe integration is a later phase, not covered here) — **done**
+
+## Frontend local development
+
+```bash
+cd frontend
+npm install
+npm run dev   # http://localhost:3000, or set PORT to avoid a local conflict
+```
+
+Set `NEXT_PUBLIC_API_URL` in `frontend/.env.local` if the API isn't at `http://localhost:8001`.

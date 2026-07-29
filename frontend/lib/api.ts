@@ -33,6 +33,11 @@ export type JobListItem = {
   completed_at: string | null;
 };
 
+export type Credits = {
+  credits_remaining: number;
+  credits_used_total: number;
+};
+
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("token");
@@ -95,6 +100,7 @@ export const api = {
     }),
   listJobs: () => request<JobListItem[]>("/jobs"),
   getJob: (id: string) => request<JobStatus>(`/jobs/${id}`),
+  getCredits: () => request<Credits>("/credits"),
 };
 
 export { ApiError };

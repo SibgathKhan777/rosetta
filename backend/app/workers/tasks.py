@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.database import SessionLocal
 from app.models.job import Job, JobResult, JobStatus
 from app.queue.redis_conn import default_queue
+from app.services.credits import deduct_credits, estimate_cost
 from app.services.job_state import (
     clear_job_state,
     get_total,
@@ -147,6 +148,11 @@ def download_job(job_id: str) -> None:
             job.duration_seconds = duration
             job.status = JobStatus.PROCESSING.value
             db.commit()
+
+            # Actual cost is only knowable now that yt-dlp reported the real
+            # duration — the submission-time check was just a nonzero-balance
+            # gate (see app/services/credits.py).
+            deduct_credits(db, job.user_id, estimate_cost(duration))
 
             default_queue.enqueue(split_job, job_id, job_timeout="15m")
         finally:

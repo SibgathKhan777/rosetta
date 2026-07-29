@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, getToken, clearToken, ApiError, JobListItem } from "@/lib/api";
+import { api, getToken, clearToken, ApiError, JobListItem, Credits } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
 export default function HomePage() {
@@ -14,6 +14,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(true);
+  const [credits, setCredits] = useState<Credits | null>(null);
 
   useEffect(() => {
     if (!getToken()) {
@@ -40,6 +41,7 @@ export default function HomePage() {
   useEffect(() => {
     if (!authed) return;
     refreshJobs();
+    api.getCredits().then(setCredits).catch(() => {});
     const interval = setInterval(refreshJobs, 5000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -57,6 +59,7 @@ export default function HomePage() {
       setError(err instanceof ApiError ? err.message : "Failed to submit job");
     } finally {
       setSubmitting(false);
+      api.getCredits().then(setCredits).catch(() => {});
     }
   }
 
@@ -71,7 +74,14 @@ export default function HomePage() {
     <main style={{ maxWidth: 720, margin: "0 auto", padding: "2rem 1rem" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
         <h1>Video Extraction</h1>
-        <button onClick={logout}>Log out</button>
+        <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
+          {credits && (
+            <span style={{ fontSize: "0.85rem", opacity: 0.8 }}>
+              {credits.credits_remaining} credits
+            </span>
+          )}
+          <button onClick={logout}>Log out</button>
+        </div>
       </div>
 
       <form onSubmit={onSubmit} style={{ display: "flex", gap: "0.5rem", marginBottom: "2rem" }}>

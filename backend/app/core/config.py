@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     vision_llm_model: str = "gpt-4o-mini"
     vision_llm_max_frames_per_job: int = 20
 
+    # CPU-friendly per the brief; "base" balances speed/accuracy for dev.
+    whisper_model_size: str = "base"
+    whisper_compute_type: str = "int8"
+
 
 @lru_cache
 def get_settings() -> Settings:

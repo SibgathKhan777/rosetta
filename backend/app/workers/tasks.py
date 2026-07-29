@@ -8,14 +8,16 @@ import yt_dlp
 
 from app.database import SessionLocal
 from app.models.job import Job, JobResult, JobStatus
+from app.services.media import extract_audio
 from app.services.progress import upsert_progress
+from app.services.transcription import transcribe_audio
 from app.storage.s3 import upload_file
 
 
 def download_job(job_id: str) -> None:
-    """Stage 2: fetch metadata + video via yt-dlp, store the raw media in
-    S3/MinIO, and record metadata. No transcription/OCR yet — later stages
-    will chain those steps in here instead of marking the job done directly.
+    """Fetch metadata + video via yt-dlp, store the raw media in S3/MinIO,
+    then transcribe the full audio as a single chunk (stage 3 — no
+    splitting/OCR yet; those are chained in here by later stages).
     """
     db = SessionLocal()
     try:
@@ -82,11 +84,30 @@ def download_job(job_id: str) -> None:
             result.job_metadata = metadata
 
             job.duration_seconds = duration
+            job.status = JobStatus.PROCESSING.value
+            db.commit()
+
+            upsert_progress(db, job.id, "download", 100.0)
+            upsert_progress(db, job.id, "transcription", 0.0)
+
+            audio_path = os.path.join(tmp_dir, "audio.wav")
+            try:
+                extract_audio(downloaded_path, audio_path)
+                transcript, segments = transcribe_audio(audio_path)
+            except Exception as exc:
+                job.status = JobStatus.FAILED.value
+                job.error_message = f"Transcription failed: {exc}"[:2000]
+                db.commit()
+                return
+
+            result.transcript = transcript
+            result.transcript_segments = segments
+
             job.status = JobStatus.DONE.value
             job.completed_at = datetime.now(timezone.utc)
             db.commit()
 
-            upsert_progress(db, job.id, "download", 100.0)
+            upsert_progress(db, job.id, "transcription", 100.0)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
     finally:

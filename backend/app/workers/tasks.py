@@ -23,7 +23,44 @@ from app.services.media import extract_scene_frames, split_audio
 from app.services.ocr import ocr_frame
 from app.services.progress import upsert_progress
 from app.services.transcription import transcribe_audio
+from app.services.vision_llm import escalate_frame
+from app.services.vision_llm import is_enabled as is_vision_llm_enabled
 from app.storage.s3 import delete_prefix, download_file, upload_file
+
+
+def _frame_badness(frame_summary: dict) -> float:
+    confidence = frame_summary["min_confidence"]
+    return 1.0 if confidence is None else 1.0 - confidence
+
+
+def _escalate_worst_frames(job_id: str, frame_summaries: list[dict]) -> list[dict]:
+    """Second-pass vision-LLM read on the top-N worst frames per job (capped
+    by settings.vision_llm_max_frames_per_job) — never every low-confidence
+    frame uncapped, to keep cost bounded on long videos.
+    """
+    worst = sorted(frame_summaries, key=_frame_badness, reverse=True)[: settings.vision_llm_max_frames_per_job]
+
+    tmp_dir = tempfile.mkdtemp(prefix=f"vision-{job_id}-")
+    escalated = []
+    try:
+        for fs in worst:
+            local_path = os.path.join(tmp_dir, os.path.basename(fs["frame_key"]))
+            try:
+                download_file(fs["frame_key"], local_path)
+                text = escalate_frame(local_path)
+            except Exception:
+                continue  # best-effort — a failed escalation never fails the job
+            if text:
+                escalated.append({
+                    "text": text,
+                    "confidence": None,
+                    "frame": os.path.basename(fs["frame_key"]),
+                    "timestamp": fs["timestamp"],
+                    "source": "vision_llm",
+                })
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return escalated
 
 
 def download_job(job_id: str) -> None:
@@ -241,13 +278,23 @@ def ocr_batch_job(job_id: str, batch_index: int, frame_entries: list) -> None:
     try:
         try:
             events = []
+            frame_summaries = []
             for timestamp, frame_key in frame_entries:
                 local_path = os.path.join(tmp_dir, os.path.basename(frame_key))
                 download_file(frame_key, local_path)
-                for detection in ocr_frame(local_path):
+                detections = ocr_frame(local_path)
+                for detection in detections:
                     detection["timestamp"] = timestamp
                     events.append(detection)
-            store_chunk_result(job_id, "ocr", batch_index, {"events": events})
+                confidences = [d["confidence"] for d in detections]
+                frame_summaries.append({
+                    "frame_key": frame_key,
+                    "timestamp": timestamp,
+                    # None (empty result) is treated as worse than any
+                    # low-confidence detection when ranking escalation candidates.
+                    "min_confidence": min(confidences) if confidences else None,
+                })
+            store_chunk_result(job_id, "ocr", batch_index, {"events": events, "frame_summaries": frame_summaries})
         except Exception as exc:
             store_chunk_result(job_id, "ocr", batch_index, {"error": str(exc)[:1000]})
             raise
@@ -296,11 +343,17 @@ def stitch_job(job_id: str) -> None:
         transcript = " ".join(seg["text"] for seg in transcript_segments).strip()
 
         ocr_events = []
+        frame_summaries = []
         for i in range(total_batches):
             batch = load_chunk_result(job_id, "ocr", i)
             if batch is None or "error" in batch:
                 continue
             ocr_events.extend(batch["events"])
+            frame_summaries.extend(batch.get("frame_summaries", []))
+
+        if is_vision_llm_enabled() and frame_summaries:
+            ocr_events.extend(_escalate_worst_frames(job_id, frame_summaries))
+
         ocr_events.sort(key=lambda e: e["timestamp"])
 
         result = db.get(JobResult, job.id)

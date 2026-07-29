@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 1440
 
     vision_llm_api_key: str = ""
+    vision_llm_base_url: str = "https://api.openai.com/v1"
     vision_llm_model: str = "gpt-4o-mini"
     vision_llm_max_frames_per_job: int = 20
 

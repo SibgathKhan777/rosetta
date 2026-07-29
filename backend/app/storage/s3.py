@@ -33,6 +33,10 @@ def upload_file(local_path: str, key: str) -> str:
     return key
 
 
+def download_file(key: str, local_path: str) -> None:
+    get_s3_client().download_file(settings.s3_bucket, key, local_path)
+
+
 def delete_prefix(prefix: str) -> None:
     """Delete every object under a key prefix. Used to purge a job's temporary
     media (video/audio/frames) once the pipeline no longer needs it."""

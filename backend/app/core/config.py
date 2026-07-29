@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     whisper_model_size: str = "base"
     whisper_compute_type: str = "int8"
 
+    audio_chunk_seconds: int = 300  # 5 min, within the spec's 5-10 min range
+    scene_change_threshold: float = 0.3
+    ocr_batch_size: int = 20
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,8 +1,11 @@
 import base64
+import re
 
 from openai import OpenAI
 
 from app.core.config import settings
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 _client: OpenAI | None = None
 
@@ -45,7 +48,11 @@ def escalate_frame(image_path: str) -> str:
             ],
             max_tokens=300,
         )
-        text = (response.choices[0].message.content or "").strip()
+        raw = response.choices[0].message.content or ""
+        # Reasoning models (e.g. Qwen3) inline their chain-of-thought in
+        # content wrapped in <think>...</think> rather than a separate field —
+        # confirmed directly against this Groq model's actual response shape.
+        text = _THINK_BLOCK_RE.sub("", raw).strip()
         return "" if text.upper() == "NONE" else text
     except Exception:
         return ""

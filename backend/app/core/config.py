@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
 
+    cors_allowed_origins: list[str] = ["http://localhost:3000"]
+
     database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/video_platform"
 
     redis_url: str = "redis://localhost:6379/0"

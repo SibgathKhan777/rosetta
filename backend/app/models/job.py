@@ -18,6 +18,12 @@ class JobStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class JobPartStatus(str, enum.Enum):
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -34,6 +40,9 @@ class Job(Base):
     user = relationship("User", back_populates="jobs")
     progress_entries = relationship("JobProgress", back_populates="job", cascade="all, delete-orphan")
     result = relationship("JobResult", back_populates="job", uselist=False, cascade="all, delete-orphan")
+    parts = relationship(
+        "JobPart", back_populates="job", cascade="all, delete-orphan", order_by="JobPart.part_index"
+    )
 
 
 class JobProgress(Base):
@@ -60,3 +69,38 @@ class JobResult(Base):
     explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     job = relationship("Job", back_populates="result")
+
+
+class JobPart(Base):
+    """One independent result for a fixed-length slice of a long (>1hr)
+    video — own transcript/OCR/explanation, own status, delivered to the
+    user as soon as that slice finishes rather than waiting for the whole
+    video. Videos at or under the long-video threshold never get rows here;
+    their single combined result lives on JobResult instead.
+    """
+
+    __tablename__ = "job_parts"
+    __table_args__ = (UniqueConstraint("job_id", "part_index", name="uq_job_parts_job_part_index"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False, index=True)
+    part_index: Mapped[int] = mapped_column(nullable=False)
+    start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default=JobPartStatus.PROCESSING.value, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # This part's own slice of the whole-video chunk/frame keys, computed
+    # once up front by _fanout_long_video and consumed later by _start_part —
+    # parts are started one at a time (not all fanned out immediately) so an
+    # earlier part's stitch isn't stuck queued behind every other part's raw
+    # work on a single-worker deployment (see stage 18 follow-up fix).
+    audio_chunk_keys: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    frame_keys: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transcript_segments: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    ocr_events: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    job = relationship("Job", back_populates="parts")

@@ -17,6 +17,7 @@ from app.schemas.job import (
     JobCreateRequest,
     JobCreateResponse,
     JobListItem,
+    JobPartResponse,
     JobProgressResponse,
     JobResultResponse,
     JobStatusResponse,
@@ -40,6 +41,26 @@ def _to_result_response(result: JobResult | None) -> JobResultResponse | None:
         metadata=result.job_metadata,
         explanation=result.explanation,
     )
+
+
+def _to_parts_response(job: Job) -> list[JobPartResponse] | None:
+    if not job.parts:
+        return None
+    return [
+        JobPartResponse(
+            part_index=p.part_index,
+            start_seconds=p.start_seconds,
+            end_seconds=p.end_seconds,
+            status=p.status,
+            error_message=p.error_message,
+            transcript=p.transcript,
+            transcript_segments=p.transcript_segments,
+            ocr_events=p.ocr_events,
+            explanation=p.explanation,
+            completed_at=p.completed_at,
+        )
+        for p in job.parts
+    ]
 
 
 def _get_owned_job(db: Session, job_id: uuid.UUID, user: User) -> Job:
@@ -180,6 +201,7 @@ def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depen
             JobProgressResponse(stage=p.stage, percent_complete=p.percent_complete) for p in job.progress_entries
         ],
         result=_to_result_response(job.result),
+        parts=_to_parts_response(job),
     )
 
 

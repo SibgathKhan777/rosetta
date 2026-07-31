@@ -1,7 +1,9 @@
+import math
 import os
 import shutil
 import tempfile
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import yt_dlp
@@ -9,15 +11,17 @@ from rq.job import Dependency
 
 from app.core.config import settings
 from app.database import SessionLocal
-from app.models.job import Job, JobResult, JobStatus
+from app.models.job import Job, JobPart, JobPartStatus, JobResult, JobStatus
 from app.queue.redis_conn import default_queue
 from app.services.credits import deduct_credits, estimate_cost
 from app.services.explanation import generate_explanation
 from app.services.job_state import (
     clear_job_state,
+    decrement_remaining,
     get_total,
     increment_done,
     load_chunk_result,
+    set_remaining,
     set_total,
     store_chunk_result,
 )
@@ -182,10 +186,13 @@ def download_job(job_id: str) -> None:
 
 
 def split_job(job_id: str) -> None:
-    """Chunk audio into fixed-length segments and pick scene-detected frame
-    candidates, then fan both out as parallel sub-tasks. A stitch task is
-    enqueued depending on every chunk/batch task so it only runs once all of
-    them finish (success or failure).
+    """Chunk audio into fixed-length segments and pick text-bearing frame
+    candidates, then hand off to one of two fan-out strategies: videos at or
+    under long_video_threshold_seconds get today's single whole-video
+    stitch (_fanout_short_video); longer videos get cut into independent
+    parts, each with its own stitch barrier (_fanout_long_video), so a
+    part's result appears as soon as that part finishes rather than waiting
+    for the whole video.
     """
     db = SessionLocal()
     try:
@@ -226,46 +233,13 @@ def split_job(job_id: str) -> None:
                 upload_file(local_path, key)
                 frame_keys.append((timestamp, key))
 
-            batch_size = settings.ocr_batch_size
-            frame_batches = [frame_keys[i : i + batch_size] for i in range(0, len(frame_keys), batch_size)]
-
-            total_chunks = len(audio_chunk_keys)
-            total_batches = len(frame_batches)
-
-            clear_job_state(job_id, "transcript", total_chunks)
-            clear_job_state(job_id, "ocr", total_batches)
-            set_total(job_id, "transcript", total_chunks)
-            set_total(job_id, "ocr", total_batches)
-
             upsert_progress(db, job.id, "split", 100.0)
-            upsert_progress(db, job.id, "transcription", 0.0)
-            upsert_progress(db, job.id, "ocr", 0.0)
 
-            dependency_jobs = []
-            for idx, (offset, key) in enumerate(audio_chunk_keys):
-                j = default_queue.enqueue(
-                    transcribe_chunk_job, job_id, idx, key, offset, job_timeout="15m"
-                )
-                dependency_jobs.append(j)
-            for idx, batch in enumerate(frame_batches):
-                # 15m wasn't enough margin: text-dense frames (the new
-                # selection favors these) pushed a 20-frame EasyOCR batch
-                # past 900s and got killed mid-batch, losing that batch's
-                # OCR results entirely.
-                j = default_queue.enqueue(ocr_batch_job, job_id, idx, batch, job_timeout="30m")
-                dependency_jobs.append(j)
-
-            if dependency_jobs:
-                default_queue.enqueue(
-                    stitch_job,
-                    job_id,
-                    depends_on=Dependency(jobs=dependency_jobs, allow_failure=True),
-                    job_timeout="10m",
-                )
+            is_long_form = (job.duration_seconds or 0) > settings.long_video_threshold_seconds
+            if is_long_form:
+                _fanout_long_video(db, job, audio_chunk_keys, frame_keys)
             else:
-                # No chunks/frames at all (shouldn't happen for a real video) —
-                # stitch immediately so the job doesn't hang forever.
-                default_queue.enqueue(stitch_job, job_id, job_timeout="10m")
+                _fanout_short_video(db, job, audio_chunk_keys, frame_keys)
         except Exception as exc:
             job.status = JobStatus.FAILED.value
             job.error_message = f"Splitting failed: {exc}"[:2000]
@@ -276,7 +250,160 @@ def split_job(job_id: str) -> None:
         db.close()
 
 
-def transcribe_chunk_job(job_id: str, chunk_index: int, audio_key: str, offset_seconds: float) -> None:
+def _fanout_short_video(db, job: Job, audio_chunk_keys: list, frame_keys: list) -> None:
+    """Today's whole-video fan-out, unchanged: one flat set of chunk/batch
+    tasks, one stitch_job barrier depending on all of them.
+    """
+    job_id = str(job.id)
+    batch_size = settings.ocr_batch_size
+    frame_batches = [frame_keys[i : i + batch_size] for i in range(0, len(frame_keys), batch_size)]
+
+    total_chunks = len(audio_chunk_keys)
+    total_batches = len(frame_batches)
+
+    clear_job_state(job_id, "transcript", total_chunks)
+    clear_job_state(job_id, "ocr", total_batches)
+    set_total(job_id, "transcript", total_chunks)
+    set_total(job_id, "ocr", total_batches)
+
+    upsert_progress(db, job.id, "transcription", 0.0)
+    upsert_progress(db, job.id, "ocr", 0.0)
+
+    dependency_jobs = []
+    for idx, (offset, key) in enumerate(audio_chunk_keys):
+        j = default_queue.enqueue(
+            transcribe_chunk_job, job_id, job_id, idx, key, offset, "transcription", job_timeout="15m"
+        )
+        dependency_jobs.append(j)
+    for idx, batch in enumerate(frame_batches):
+        # 15m wasn't enough margin: text-dense frames (the new
+        # selection favors these) pushed a 20-frame EasyOCR batch
+        # past 900s and got killed mid-batch, losing that batch's
+        # OCR results entirely.
+        j = default_queue.enqueue(ocr_batch_job, job_id, job_id, idx, batch, "ocr", job_timeout="30m")
+        dependency_jobs.append(j)
+
+    if dependency_jobs:
+        default_queue.enqueue(
+            stitch_job,
+            job_id,
+            depends_on=Dependency(jobs=dependency_jobs, allow_failure=True),
+            job_timeout="10m",
+        )
+    else:
+        # No chunks/frames at all (shouldn't happen for a real video) —
+        # stitch immediately so the job doesn't hang forever.
+        default_queue.enqueue(stitch_job, job_id, job_timeout="10m")
+
+
+def _fanout_long_video(db, job: Job, audio_chunk_keys: list, frame_keys: list) -> None:
+    """Videos over long_video_threshold_seconds get cut into
+    video_part_seconds-long parts, each with its own independent
+    transcript/OCR/explanation. Parts are started ONE AT A TIME
+    (_start_part), not all fanned out here — RQ appends a dependent job
+    (like a part's stitch) to the BACK of the queue once its dependencies
+    resolve, so fanning out every part's raw work up front means an early
+    part's stitch ends up stuck behind every later part's raw tasks on a
+    single-worker deployment, and nothing becomes visible until nearly the
+    whole video is done. Chaining part-by-part guarantees part 0's result
+    appears before part 1's work even starts, regardless of worker count.
+    """
+    job_id = str(job.id)
+    part_seconds = settings.video_part_seconds
+    duration = job.duration_seconds
+    num_parts = max(1, math.ceil(duration / part_seconds))
+
+    chunks_by_part: dict[int, list] = defaultdict(list)
+    for offset, key in audio_chunk_keys:
+        p_idx = min(int(offset // part_seconds), num_parts - 1)
+        chunks_by_part[p_idx].append([offset, key])
+
+    frames_by_part: dict[int, list] = defaultdict(list)
+    for timestamp, key in frame_keys:
+        p_idx = min(int(timestamp // part_seconds), num_parts - 1)
+        frames_by_part[p_idx].append([timestamp, key])
+
+    for p in range(num_parts):
+        db.add(
+            JobPart(
+                job_id=job.id,
+                part_index=p,
+                start_seconds=p * part_seconds,
+                end_seconds=min((p + 1) * part_seconds, duration),
+                status=JobPartStatus.PROCESSING.value,
+                audio_chunk_keys=chunks_by_part.get(p, []),
+                frame_keys=frames_by_part.get(p, []),
+            )
+        )
+    db.commit()
+
+    upsert_progress(db, job.id, "parts", 0.0)
+    set_remaining(job_id, "parts", num_parts)
+
+    _start_part(job_id, 0)
+
+
+def _start_part(job_id: str, part_index: int) -> None:
+    """Enqueues one part's own chunk/OCR-batch tasks plus its stitch
+    barrier. Called directly for part 0 by _fanout_long_video, and then
+    chained by stitch_part_job for every subsequent part once the previous
+    one finishes — see _fanout_long_video's docstring for why.
+    """
+    db = SessionLocal()
+    try:
+        part = db.query(JobPart).filter_by(job_id=uuid.UUID(job_id), part_index=part_index).one_or_none()
+        if part is None:
+            return
+
+        state_key = f"{job_id}:p{part_index}"
+        part_chunks = part.audio_chunk_keys or []
+        part_frames = part.frame_keys or []
+        batch_size = settings.ocr_batch_size
+        part_frame_batches = [part_frames[i : i + batch_size] for i in range(0, len(part_frames), batch_size)]
+
+        clear_job_state(state_key, "transcript", len(part_chunks))
+        clear_job_state(state_key, "ocr", len(part_frame_batches))
+        set_total(state_key, "transcript", len(part_chunks))
+        set_total(state_key, "ocr", len(part_frame_batches))
+
+        dependency_jobs = []
+        for local_idx, (offset, key) in enumerate(part_chunks):
+            # offset stays video-absolute (not part-relative) so this
+            # part's transcript segments keep correct whole-video timestamps.
+            j = default_queue.enqueue(
+                transcribe_chunk_job, job_id, state_key, local_idx, key, offset, None, job_timeout="15m"
+            )
+            dependency_jobs.append(j)
+        for local_idx, batch in enumerate(part_frame_batches):
+            j = default_queue.enqueue(
+                ocr_batch_job, job_id, state_key, local_idx, batch, None, job_timeout="30m"
+            )
+            dependency_jobs.append(j)
+
+        if dependency_jobs:
+            default_queue.enqueue(
+                stitch_part_job,
+                job_id,
+                part_index,
+                depends_on=Dependency(jobs=dependency_jobs, allow_failure=True),
+                job_timeout="10m",
+            )
+        else:
+            # A short trailing part can have zero chunks/batches — mirrors
+            # the short-video path's own empty-candidates fallback.
+            default_queue.enqueue(stitch_part_job, job_id, part_index, job_timeout="10m")
+    finally:
+        db.close()
+
+
+def transcribe_chunk_job(
+    job_id: str,
+    state_key: str,
+    chunk_index: int,
+    audio_key: str,
+    offset_seconds: float,
+    progress_stage: str | None = "transcription",
+) -> None:
     tmp_dir = tempfile.mkdtemp(prefix=f"chunk-{job_id}-{chunk_index}-")
     try:
         local_path = os.path.join(tmp_dir, "chunk.wav")
@@ -286,25 +413,32 @@ def transcribe_chunk_job(job_id: str, chunk_index: int, audio_key: str, offset_s
             for seg in segments:
                 seg["start"] += offset_seconds
                 seg["end"] += offset_seconds
-            store_chunk_result(job_id, "transcript", chunk_index, {"transcript": transcript, "segments": segments})
+            store_chunk_result(state_key, "transcript", chunk_index, {"transcript": transcript, "segments": segments})
         except Exception as exc:
-            store_chunk_result(job_id, "transcript", chunk_index, {"error": str(exc)[:1000]})
+            store_chunk_result(state_key, "transcript", chunk_index, {"error": str(exc)[:1000]})
             raise
         finally:
-            total = get_total(job_id, "transcript")
-            done = increment_done(job_id, "transcript")
-            db = SessionLocal()
-            try:
-                job = db.get(Job, uuid.UUID(job_id))
-                if job is not None and total:
-                    upsert_progress(db, job.id, "transcription", min(100.0, done / total * 100.0))
-            finally:
-                db.close()
+            total = get_total(state_key, "transcript")
+            done = increment_done(state_key, "transcript")
+            if progress_stage:
+                db = SessionLocal()
+                try:
+                    job = db.get(Job, uuid.UUID(job_id))
+                    if job is not None and total:
+                        upsert_progress(db, job.id, progress_stage, min(100.0, done / total * 100.0))
+                finally:
+                    db.close()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def ocr_batch_job(job_id: str, batch_index: int, frame_entries: list) -> None:
+def ocr_batch_job(
+    job_id: str,
+    state_key: str,
+    batch_index: int,
+    frame_entries: list,
+    progress_stage: str | None = "ocr",
+) -> None:
     tmp_dir = tempfile.mkdtemp(prefix=f"batch-{job_id}-{batch_index}-")
     try:
         try:
@@ -325,20 +459,21 @@ def ocr_batch_job(job_id: str, batch_index: int, frame_entries: list) -> None:
                     # low-confidence detection when ranking escalation candidates.
                     "min_confidence": min(confidences) if confidences else None,
                 })
-            store_chunk_result(job_id, "ocr", batch_index, {"events": events, "frame_summaries": frame_summaries})
+            store_chunk_result(state_key, "ocr", batch_index, {"events": events, "frame_summaries": frame_summaries})
         except Exception as exc:
-            store_chunk_result(job_id, "ocr", batch_index, {"error": str(exc)[:1000]})
+            store_chunk_result(state_key, "ocr", batch_index, {"error": str(exc)[:1000]})
             raise
         finally:
-            total = get_total(job_id, "ocr")
-            done = increment_done(job_id, "ocr")
-            db = SessionLocal()
-            try:
-                job = db.get(Job, uuid.UUID(job_id))
-                if job is not None and total:
-                    upsert_progress(db, job.id, "ocr", min(100.0, done / total * 100.0))
-            finally:
-                db.close()
+            total = get_total(state_key, "ocr")
+            done = increment_done(state_key, "ocr")
+            if progress_stage:
+                db = SessionLocal()
+                try:
+                    job = db.get(Job, uuid.UUID(job_id))
+                    if job is not None and total:
+                        upsert_progress(db, job.id, progress_stage, min(100.0, done / total * 100.0))
+                finally:
+                    db.close()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -417,3 +552,114 @@ def stitch_job(job_id: str) -> None:
         delete_prefix(f"jobs/{job_id}/")
     finally:
         db.close()
+
+
+def stitch_part_job(job_id: str, part_index: int) -> None:
+    """Same aggregation shape as stitch_job, scoped to one part's own
+    chunks/batches — writes onto that JobPart row instead of JobResult, and
+    never touches the shared S3 prefix or job.status directly (that's
+    _finalize_long_job's job, once every sibling part is terminal).
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(Job, uuid.UUID(job_id))
+        if job is None:
+            return
+        part = db.query(JobPart).filter_by(job_id=job.id, part_index=part_index).one_or_none()
+        if part is None:
+            return
+
+        state_key = f"{job_id}:p{part_index}"
+        total_chunks = get_total(state_key, "transcript")
+        total_batches = get_total(state_key, "ocr")
+
+        transcript_segments = []
+        failed_chunks = 0
+        for i in range(total_chunks):
+            chunk = load_chunk_result(state_key, "transcript", i)
+            if chunk is None or "error" in chunk:
+                failed_chunks += 1
+                continue
+            transcript_segments.extend(chunk["segments"])
+        transcript_segments.sort(key=lambda s: s["start"])
+        transcript = " ".join(seg["text"] for seg in transcript_segments).strip()
+
+        ocr_events = []
+        frame_summaries = []
+        for i in range(total_batches):
+            batch = load_chunk_result(state_key, "ocr", i)
+            if batch is None or "error" in batch:
+                continue
+            ocr_events.extend(batch["events"])
+            frame_summaries.extend(batch.get("frame_summaries", []))
+
+        if is_vision_llm_enabled() and frame_summaries:
+            ocr_events.extend(_escalate_worst_frames(state_key, frame_summaries))
+
+        ocr_events.sort(key=lambda e: e["timestamp"])
+
+        part.transcript = transcript
+        part.transcript_segments = transcript_segments
+        part.ocr_events = ocr_events
+
+        if is_vision_llm_enabled() and (transcript or ocr_events):
+            ocr_text = "\n".join(e["text"] for e in ocr_events)
+            metadata = (job.result.job_metadata if job.result else None) or {}
+            base_title = metadata.get("title", "")
+            part_title = f"{base_title} — part {part_index + 1}" if base_title else f"Part {part_index + 1}"
+            # transcript/ocr_text here are only one part's worth of content
+            # (a few minutes), so explanation_max_input_chars essentially
+            # never truncates — unlike the whole-video stitch_job path.
+            part.explanation = generate_explanation(part_title, transcript, ocr_text)
+
+        if total_chunks > 0 and failed_chunks == total_chunks:
+            part.status = JobPartStatus.FAILED.value
+            part.error_message = "All audio chunks failed to transcribe for this part"
+        else:
+            part.status = JobPartStatus.DONE.value
+            if failed_chunks:
+                part.error_message = f"{failed_chunks}/{total_chunks} audio chunks failed; this part's transcript is partial"
+        part.completed_at = datetime.now(timezone.utc)
+        db.commit()
+
+        clear_job_state(state_key, "transcript", total_chunks)
+        clear_job_state(state_key, "ocr", total_batches)
+
+        num_parts = len(job.parts)
+        done_parts = db.query(JobPart).filter(
+            JobPart.job_id == job.id, JobPart.status != JobPartStatus.PROCESSING.value
+        ).count()
+        if num_parts:
+            upsert_progress(db, job.id, "parts", min(100.0, done_parts / num_parts * 100.0))
+        db.commit()
+
+        remaining = decrement_remaining(job_id, "parts")
+        if remaining <= 0:
+            _finalize_long_job(db, job)
+        else:
+            next_index = part_index + 1
+            if next_index < num_parts:
+                default_queue.enqueue(_start_part, job_id, next_index)
+    finally:
+        db.close()
+
+
+def _finalize_long_job(db, job: Job) -> None:
+    """Runs once, triggered by whichever stitch_part_job call observes the
+    atomic remaining-parts counter hit zero — sets the parent job's overall
+    status and does the single shared-S3-prefix cleanup for the whole video.
+    """
+    parts = db.query(JobPart).filter_by(job_id=job.id).order_by(JobPart.part_index).all()
+    failed_parts = [p for p in parts if p.status == JobPartStatus.FAILED.value]
+
+    if parts and len(failed_parts) == len(parts):
+        job.status = JobStatus.FAILED.value
+        job.error_message = "All parts failed to process"
+    else:
+        job.status = JobStatus.DONE.value
+        if failed_parts:
+            failed_labels = ", ".join(str(p.part_index + 1) for p in failed_parts)
+            job.error_message = f"Part(s) {failed_labels} failed; other parts completed"
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    delete_prefix(f"jobs/{job.id}/")

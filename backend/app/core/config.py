@@ -87,10 +87,25 @@ class Settings(BaseSettings):
     # OCR runtime on CPU.
     min_frame_gap_seconds: float = 10.0
 
+    # --- Progressive per-part results for long videos (stage 18) ---
+    # Above this duration, split_job fans out per-15min-part instead of one
+    # whole-video stitch — each part gets its own transcript/OCR/explanation,
+    # delivered as soon as that part finishes rather than waiting for the
+    # entire video. Also sidesteps explanation_max_input_chars truncating a
+    # long video's combined transcript, since each part's text is a fraction
+    # of that cap.
+    long_video_threshold_seconds: int = 3600
+    video_part_seconds: int = 900
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    if settings.video_part_seconds % settings.audio_chunk_seconds != 0:
+        # Otherwise a fixed-length audio chunk could straddle a part
+        # boundary and get its trailing audio mis-attributed to the wrong part.
+        raise RuntimeError("video_part_seconds must be a multiple of audio_chunk_seconds")
+    return settings
 
 
 settings = get_settings()

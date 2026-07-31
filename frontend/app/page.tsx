@@ -13,6 +13,7 @@ const STAGE_LABEL: Record<string, string> = {
   transcription: "Listening",
   ocr: "Reading on-screen text",
   stitching: "Stitching the decode",
+  parts: "Processing in parts",
 };
 
 function truncate(text: string | null | undefined, n: number): string {

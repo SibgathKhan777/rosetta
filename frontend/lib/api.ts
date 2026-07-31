@@ -13,6 +13,19 @@ export type JobResult = {
   explanation: string | null;
 };
 
+export type JobPart = {
+  part_index: number;
+  start_seconds: number;
+  end_seconds: number;
+  status: string;
+  error_message: string | null;
+  transcript: string | null;
+  transcript_segments: { start: number; end: number; text: string }[] | null;
+  ocr_events: { text: string; timestamp: number; confidence: number | null; source?: string }[] | null;
+  explanation: string | null;
+  completed_at: string | null;
+};
+
 export type JobStatus = {
   job_id: string;
   url: string;
@@ -23,6 +36,7 @@ export type JobStatus = {
   completed_at: string | null;
   progress: JobProgress[];
   result: JobResult | null;
+  parts: JobPart[] | null;
 };
 
 export type JobListItem = {

@@ -32,6 +32,21 @@ class JobResultResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class JobPartResponse(BaseModel):
+    part_index: int
+    start_seconds: float
+    end_seconds: float
+    status: str
+    error_message: str | None = None
+    transcript: str | None = None
+    transcript_segments: list[Any] | None = None
+    ocr_events: list[Any] | None = None
+    explanation: str | None = None
+    completed_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class JobStatusResponse(BaseModel):
     job_id: uuid.UUID
     url: str
@@ -42,6 +57,7 @@ class JobStatusResponse(BaseModel):
     completed_at: datetime | None
     progress: list[JobProgressResponse]
     result: JobResultResponse | None = None
+    parts: list[JobPartResponse] | None = None
 
     model_config = {"from_attributes": True}
 

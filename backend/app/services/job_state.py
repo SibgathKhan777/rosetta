@@ -50,3 +50,18 @@ def clear_job_state(job_id: str, kind: str, total: int) -> None:
     keys += [_done_count_key(job_id, kind), _total_key(job_id, kind)]
     if keys:
         redis_conn.delete(*keys)
+
+
+def _remaining_key(job_id: str, kind: str) -> str:
+    return f"job:{job_id}:{kind}:remaining"
+
+
+def set_remaining(job_id: str, kind: str, total: int) -> None:
+    redis_conn.set(_remaining_key(job_id, kind), total, ex=RESULT_TTL_SECONDS)
+
+
+def decrement_remaining(job_id: str, kind: str) -> int:
+    # Atomic DECR — exactly one caller observes the value hit zero even if
+    # several callers finish within the same instant, so it's safe to use
+    # as a race-free "am I the last one done" check without a DB row lock.
+    return redis_conn.decr(_remaining_key(job_id, kind))

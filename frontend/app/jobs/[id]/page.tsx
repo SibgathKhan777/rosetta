@@ -150,46 +150,110 @@ export default function JobDetailPage() {
         </section>
       )}
 
-      {job.result?.transcript && (
-        <section style={{ marginBottom: "2.5rem" }}>
-          <SectionHeading>Transcript</SectionHeading>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            {(job.result.transcript_segments ?? []).map((seg, i) => (
-              <p key={i} style={{ fontSize: "0.92rem" }}>
-                <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
-                  {formatTimestamp(seg.start)}
-                </span>
-                {seg.text}
-              </p>
-            ))}
-          </div>
-        </section>
-      )}
+      {job.parts ? (
+        job.parts.map((part) => (
+          <section key={part.part_index} style={{ marginBottom: "2.5rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.7rem" }}>
+              <SectionHeading>
+                Part {part.part_index + 1} · {formatTimestamp(part.start_seconds)}–{formatTimestamp(part.end_seconds)}
+              </SectionHeading>
+              <StatusBadge status={part.status} />
+            </div>
 
-      {job.result?.ocr_events && job.result.ocr_events.length > 0 && (
-        <section style={{ marginBottom: "2.5rem" }}>
-          <SectionHeading>On-screen text</SectionHeading>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            {job.result.ocr_events.map((event, i) => (
-              <p key={i} style={{ fontSize: "0.92rem" }}>
-                <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
-                  {formatTimestamp(event.timestamp)}
-                </span>
-                {event.text}
-                {event.source === "vision_llm" && (
-                  <span style={{ marginLeft: "0.5rem", fontSize: "0.72rem", color: "var(--patina)" }}>(vision-LLM)</span>
-                )}
+            {part.error_message && (
+              <p
+                style={{
+                  color: part.status === "failed" ? "var(--danger)" : "var(--gold)",
+                  marginBottom: "0.8rem",
+                  fontSize: "0.85rem",
+                }}
+              >
+                {part.error_message}
               </p>
-            ))}
-          </div>
-        </section>
-      )}
+            )}
 
-      {job.result?.explanation && (
-        <section>
-          <SectionHeading>Explained for you</SectionHeading>
-          <p style={{ whiteSpace: "pre-wrap", fontSize: "0.95rem", lineHeight: 1.7 }}>{job.result.explanation}</p>
-        </section>
+            {part.status === "processing" && !part.transcript && !part.ocr_events && (
+              <p style={{ color: "var(--ink-dim)", fontSize: "0.9rem" }}>Still decoding this part…</p>
+            )}
+
+            {part.transcript_segments && part.transcript_segments.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginBottom: "1rem" }}>
+                {part.transcript_segments.map((seg, i) => (
+                  <p key={i} style={{ fontSize: "0.92rem" }}>
+                    <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
+                      {formatTimestamp(seg.start)}
+                    </span>
+                    {seg.text}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {part.ocr_events && part.ocr_events.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginBottom: "1rem" }}>
+                {part.ocr_events.map((event, i) => (
+                  <p key={i} style={{ fontSize: "0.92rem" }}>
+                    <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
+                      {formatTimestamp(event.timestamp)}
+                    </span>
+                    {event.text}
+                    {event.source === "vision_llm" && (
+                      <span style={{ marginLeft: "0.5rem", fontSize: "0.72rem", color: "var(--patina)" }}>(vision-LLM)</span>
+                    )}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {part.explanation && (
+              <p style={{ whiteSpace: "pre-wrap", fontSize: "0.95rem", lineHeight: 1.7 }}>{part.explanation}</p>
+            )}
+          </section>
+        ))
+      ) : (
+        <>
+          {job.result?.transcript && (
+            <section style={{ marginBottom: "2.5rem" }}>
+              <SectionHeading>Transcript</SectionHeading>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                {(job.result.transcript_segments ?? []).map((seg, i) => (
+                  <p key={i} style={{ fontSize: "0.92rem" }}>
+                    <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
+                      {formatTimestamp(seg.start)}
+                    </span>
+                    {seg.text}
+                  </p>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {job.result?.ocr_events && job.result.ocr_events.length > 0 && (
+            <section style={{ marginBottom: "2.5rem" }}>
+              <SectionHeading>On-screen text</SectionHeading>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                {job.result.ocr_events.map((event, i) => (
+                  <p key={i} style={{ fontSize: "0.92rem" }}>
+                    <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
+                      {formatTimestamp(event.timestamp)}
+                    </span>
+                    {event.text}
+                    {event.source === "vision_llm" && (
+                      <span style={{ marginLeft: "0.5rem", fontSize: "0.72rem", color: "var(--patina)" }}>(vision-LLM)</span>
+                    )}
+                  </p>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {job.result?.explanation && (
+            <section>
+              <SectionHeading>Explained for you</SectionHeading>
+              <p style={{ whiteSpace: "pre-wrap", fontSize: "0.95rem", lineHeight: 1.7 }}>{job.result.explanation}</p>
+            </section>
+          )}
+        </>
       )}
     </main>
   );

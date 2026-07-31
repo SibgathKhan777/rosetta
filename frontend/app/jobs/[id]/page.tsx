@@ -177,36 +177,51 @@ export default function JobDetailPage() {
             )}
 
             {part.transcript_segments && part.transcript_segments.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginBottom: "1rem" }}>
-                {part.transcript_segments.map((seg, i) => (
-                  <p key={i} style={{ fontSize: "0.92rem" }}>
-                    <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
-                      {formatTimestamp(seg.start)}
-                    </span>
-                    {seg.text}
-                  </p>
-                ))}
+              <div style={{ marginBottom: "1.2rem" }}>
+                <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--ink-faint)", marginBottom: "0.5rem" }}>
+                  Transcript
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                  {part.transcript_segments.map((seg, i) => (
+                    <p key={i} style={{ fontSize: "0.92rem" }}>
+                      <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
+                        {formatTimestamp(seg.start)}
+                      </span>
+                      {seg.text}
+                    </p>
+                  ))}
+                </div>
               </div>
             )}
 
             {part.ocr_events && part.ocr_events.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginBottom: "1rem" }}>
-                {part.ocr_events.map((event, i) => (
-                  <p key={i} style={{ fontSize: "0.92rem" }}>
-                    <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
-                      {formatTimestamp(event.timestamp)}
-                    </span>
-                    {event.text}
-                    {event.source === "vision_llm" && (
-                      <span style={{ marginLeft: "0.5rem", fontSize: "0.72rem", color: "var(--patina)" }}>(vision-LLM)</span>
-                    )}
-                  </p>
-                ))}
+              <div style={{ marginBottom: "1.2rem" }}>
+                <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--ink-faint)", marginBottom: "0.5rem" }}>
+                  On-screen text
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                  {part.ocr_events.map((event, i) => (
+                    <p key={i} style={{ fontSize: "0.92rem" }}>
+                      <span className="mono" style={{ color: "var(--ink-faint)", marginRight: "0.6rem", fontSize: "0.8rem" }}>
+                        {formatTimestamp(event.timestamp)}
+                      </span>
+                      {event.text}
+                      {event.source === "vision_llm" && (
+                        <span style={{ marginLeft: "0.5rem", fontSize: "0.72rem", color: "var(--patina)" }}>(vision-LLM)</span>
+                      )}
+                    </p>
+                  ))}
+                </div>
               </div>
             )}
 
             {part.explanation && (
-              <p style={{ whiteSpace: "pre-wrap", fontSize: "0.95rem", lineHeight: 1.7 }}>{part.explanation}</p>
+              <div>
+                <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--ink-faint)", marginBottom: "0.5rem" }}>
+                  Explained for you
+                </p>
+                <p style={{ whiteSpace: "pre-wrap", fontSize: "0.95rem", lineHeight: 1.7 }}>{part.explanation}</p>
+              </div>
             )}
           </section>
         ))

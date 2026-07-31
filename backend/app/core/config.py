@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     # answer on a ~15min video's transcript before hitting max_tokens.
     explanation_max_tokens: int = 4096
 
+    # Groq's free daily token quota (200K/day) gets exhausted repeatedly
+    # under real usage, silently returning an empty explanation. When set,
+    # generate_explanation retries once via this OpenRouter free-tier model
+    # instead of giving up — same fallback used manually earlier in this
+    # project's development.
+    fallback_llm_api_key: str = ""
+    fallback_llm_base_url: str = "https://openrouter.ai/api/v1"
+    fallback_llm_model: str = "openai/gpt-oss-20b:free"
+
     # CPU-friendly per the brief; "base" balances speed/accuracy for dev.
     whisper_model_size: str = "base"
     whisper_compute_type: str = "int8"

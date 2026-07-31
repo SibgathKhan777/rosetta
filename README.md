@@ -116,6 +116,19 @@ including a 45-minute long-form test.
     end-to-end in production including real email delivery; see
     [DEPLOYMENT.md](./DEPLOYMENT.md#11-password-reset-email-resend) for setup
     and its known sandbox-sender limitation
+17. Progressive per-part results for videos over 1 hour: cut into 15-minute
+    parts (`job_parts` table), each with its own independent
+    transcript/OCR/explanation, appearing as soon as that part finishes
+    rather than waiting for the whole video — also fixes a real truncation
+    bug, since each part's text stays well under
+    `explanation_max_input_chars`. Parts are started **one at a time**
+    (each part's finish triggers the next), not all fanned out together —
+    an initial version fanned every part out immediately, which on a
+    single-worker deployment meant an early part's result got stuck queued
+    behind every later part's raw work, and nothing appeared until almost
+    the whole video was done. Caught and fixed via a real ~82-minute
+    production test (not just local), confirmed with worker logs showing
+    part 1's work only starting after part 0 fully completed — **done**
 
 ## Frontend local development
 

@@ -246,6 +246,36 @@ send fails) would leak whether an email address has an account, defeating
 the whole point of the generic message. The failure is logged
 server-side (`docker compose ... logs api`) so it's still debuggable.
 
+## 12. Long-video (>1hr) part-based processing
+
+Videos over `long_video_threshold_seconds` (default 3600 = 1hr) get cut
+into `video_part_seconds`-long parts (default 900 = 15min), each with its
+own transcript/OCR/explanation stored in the `job_parts` table. No env vars
+are required for this — the defaults ship as-is; only change them in
+`.env.production` if you want a different threshold/part length.
+
+**Parts run strictly one at a time**, not fanned out together. This was a
+deliberate fix, not the original design: RQ (the job queue) appends a
+dependent job to the *back* of the queue once its dependencies resolve, not
+the front. Fanning out every part's raw work up front meant an early part's
+`stitch_part_job` ended up queued behind every later part's raw tasks on
+this single-worker deployment — so nothing became visible until nearly the
+entire video was done, defeating the point of "progressive" delivery.
+Confirmed with a real ~82-minute production video: the buggy version
+finished correctly but delivered all 6 parts in one late burst; the fixed
+version (`_start_part` chains part N+1 only after part N's stitch
+completes) showed part 0's real transcript/OCR while parts 1-5 were still
+`processing`, confirmed via `docker compose ... logs worker` showing
+`_start_part(job_id, 1)` firing only after `stitch_part_job(job_id, 0)`
+completed.
+
+**Trade-off**: parts of the *same* job never run in parallel with each
+other now, even if you scale up worker replicas — that only helps multiple
+different jobs run concurrently. Given this deployment is a single small
+instance, that wasn't a real loss (everything was already effectively
+serialized by having one worker); it just changed *when* each part's result
+becomes visible, from "all at the very end" to "as each one finishes."
+
 ## Known limitation: YouTube blocks AWS's IP range specifically
 
 Unlike Instagram (confirmed working directly from this deployment), YouTube

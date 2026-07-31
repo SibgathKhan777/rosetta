@@ -271,7 +271,54 @@ sender (`onboarding@resend.dev`) can only deliver to the email address that
 owns the Resend account — fine for a personal/small-scale launch, not for
 other users at scale until a domain is verified.
 
-## 14. Local development (unchanged throughout)
+## 14. Long-video (>1hr) part-based processing — test locally without a real 1hr+ video
+
+```bash
+# Temporarily lower thresholds in .env (must keep video_part_seconds a
+# multiple of audio_chunk_seconds — enforced at startup, fails fast otherwise):
+echo '
+AUDIO_CHUNK_SECONDS=60
+LONG_VIDEO_THRESHOLD_SECONDS=100
+VIDEO_PART_SECONDS=120' >> .env
+docker compose up -d api worker
+
+# Submit any real video over 100s to exercise the part-based path locally,
+# then watch parts complete one at a time (not all at once):
+docker compose logs worker -f | grep -E "_start_part|stitch_part_job"
+
+# Revert before touching production — remove the 3 temp lines from .env,
+# then:
+docker compose up -d api worker
+```
+
+Generate the migration for `job_parts`/its columns the same way as any
+other model change — autogenerate, don't hand-write:
+```bash
+docker compose run --rm --no-deps api alembic revision --autogenerate -m "message"
+```
+
+**Debugging "parts stuck in processing" on a real long video**: check
+whether a part's `stitch_part_job` actually ran, vs. is stuck queued behind
+other work —
+```bash
+docker compose exec worker python -c "
+from app.queue.redis_conn import redis_conn
+from rq.registry import DeferredJobRegistry
+from rq.queue import Queue
+q = Queue('default', connection=redis_conn)
+dr = DeferredJobRegistry(queue=q)
+print('deferred:', dr.count, dr.get_job_ids()[:10])
+print('queued:', q.count)
+"
+```
+If a dependent job sits in `DeferredJobRegistry` with dependencies already
+satisfied, something is wrong with the dependency wiring — this project's
+own first version had exactly this bug (parts fanned out all at once, so
+an early part's stitch got stuck behind later parts' raw work on a
+single-worker deployment; fixed by chaining parts one at a time via
+`_start_part`, see `DEPLOYMENT.md`'s long-video section).
+
+## 15. Local development (unchanged throughout)
 
 ```bash
 cp .env.example .env
@@ -285,7 +332,7 @@ npm run dev                                  # http://localhost:3000
 npm run build                                # verify a production build compiles
 ```
 
-## 15. Git — how the work was committed
+## 16. Git — how the work was committed
 
 ```bash
 git status

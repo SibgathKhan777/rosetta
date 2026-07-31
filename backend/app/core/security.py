@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt
@@ -14,6 +15,13 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
+
+def hash_reset_token(raw_token: str) -> str:
+    # sha256, not bcrypt: the raw token is already a high-entropy random
+    # value (not a human password), so a fast deterministic hash is enough
+    # and lets lookup be a plain equality query instead of a per-row verify.
+    return hashlib.sha256(raw_token.encode()).hexdigest()
 
 
 def create_access_token(subject: str) -> str:

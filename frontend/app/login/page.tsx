@@ -78,7 +78,12 @@ export default function LoginPage() {
             {loading ? "Signing in…" : "Log in"}
           </button>
         </form>
-        <p style={{ marginTop: "1.4rem", fontSize: "0.87rem", color: "var(--ink-dim)" }}>
+        <p style={{ marginTop: "1rem", fontSize: "0.85rem" }}>
+          <Link href="/forgot-password" style={{ color: "var(--gold)", textDecoration: "underline" }}>
+            Forgot password?
+          </Link>
+        </p>
+        <p style={{ marginTop: "0.6rem", fontSize: "0.87rem", color: "var(--ink-dim)" }}>
           New here?{" "}
           <Link href="/signup" style={{ color: "var(--gold)", textDecoration: "underline" }}>
             Create an account

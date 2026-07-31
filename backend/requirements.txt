@@ -24,3 +24,4 @@ onnxruntime==1.28.0
 opencv-python-headless==5.0.0.93
 openai==2.48.0
 slowapi==0.1.9
+resend==2.35.0

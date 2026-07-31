@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440
 
+    # --- Password reset (stage 17) ---
+    resend_api_key: str = ""
+    # Resend's shared sandbox sender — works without owning/verifying a
+    # domain, but (per Resend's free-tier rules) can only deliver to the
+    # email address that owns the Resend account until a domain is verified.
+    resend_from_email: str = "Rosetta <onboarding@resend.dev>"
+    frontend_url: str = "http://localhost:3000"
+    password_reset_token_expire_minutes: int = 30
+
     vision_llm_api_key: str = ""
     vision_llm_base_url: str = "https://api.openai.com/v1"
     vision_llm_model: str = "gpt-4o-mini"

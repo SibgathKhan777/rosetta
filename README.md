@@ -109,6 +109,13 @@ including a 45-minute long-form test.
     video and every yt-dlp "player client" failed identically from the AWS IP, while
     Instagram worked fine) — download locally, hand the file straight to the deployed
     pipeline, skipping yt-dlp on the server — **done**, verified end-to-end in production
+15. Rebrand as "Rosetta" + chat-style dashboard redesign — **done**
+16. Email-based forgot/reset password (`POST /auth/forgot-password` +
+    `POST /auth/reset-password`, one-time SHA-256-hashed tokens with a 30min
+    expiry, sent via [Resend](https://resend.com)) — **done**, verified
+    end-to-end in production including real email delivery; see
+    [DEPLOYMENT.md](./DEPLOYMENT.md#11-password-reset-email-resend) for setup
+    and its known sandbox-sender limitation
 
 ## Frontend local development
 

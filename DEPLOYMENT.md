@@ -209,6 +209,43 @@ Don't stop at `curl /health` — sign up through the real deployed frontend
 and submit a real video. This is how the mixed-content issue above was
 actually caught; a curl-only check would have missed it entirely.
 
+## 11. Password reset email (Resend)
+
+Forgot/reset password (`POST /auth/forgot-password` + `POST /auth/reset-password`)
+sends the reset link by email via [Resend](https://resend.com) — free, no card,
+signup only needs an email address.
+
+1. Sign up at resend.com, then create an API key under **API Keys** in the dashboard.
+2. Set these in `.env.production` (the example file already has placeholders):
+
+```bash
+RESEND_API_KEY=re_...
+RESEND_FROM_EMAIL=Rosetta <onboarding@resend.dev>
+FRONTEND_URL=https://<project>.vercel.app   # must be the real Vercel URL, not localhost
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES=30
+```
+
+3. Restart the API so it picks up the new env vars:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build api worker
+```
+
+**Known limitation**: without verifying your own domain with Resend, the
+shared sandbox sender (`onboarding@resend.dev`) can only deliver to the email
+address that owns the Resend account — fine for testing with your own
+account, but other users' reset emails won't actually arrive until a domain
+is verified. `RESEND_API_KEY` left blank doesn't break signup/login; it just
+means reset emails silently fail to send (logged server-side, never surfaced
+to the caller — see the next paragraph for why).
+
+If `RESEND_API_KEY` is missing or Resend has an outage, `/auth/forgot-password`
+still returns its generic "if that email is registered..." success message
+rather than a 500 — the alternative (a different response when the email
+send fails) would leak whether an email address has an account, defeating
+the whole point of the generic message. The failure is logged
+server-side (`docker compose ... logs api`) so it's still debuggable.
+
 ## Known limitation: YouTube blocks AWS's IP range specifically
 
 Unlike Instagram (confirmed working directly from this deployment), YouTube

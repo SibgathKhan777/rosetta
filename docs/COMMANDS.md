@@ -237,7 +237,41 @@ curl -X POST https://<instance-ip>.nip.io/auth/login \
   -d '{"email": "you@example.com", "password": "..."}'
 ```
 
-## 13. Local development (unchanged throughout)
+## 13. Password reset via email (Resend) — set up and test
+
+```bash
+# Sign up free at resend.com, create an API key under API Keys, then:
+
+# Local dev — add to .env:
+RESEND_API_KEY=re_...
+RESEND_FROM_EMAIL=Rosetta <onboarding@resend.dev>
+FRONTEND_URL=http://localhost:3000
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES=30
+docker compose up -d api worker      # picks up the new env vars
+
+# Production — add the same keys to .env.production on the server
+# (FRONTEND_URL must be the real Vercel URL, not localhost), then:
+docker compose --env-file .env.production -f docker-compose.prod.yml \
+  up -d --build api worker
+
+# Trigger a reset email:
+curl -X POST https://<instance-ip>.nip.io/auth/forgot-password \
+  -H "Content-Type: application/json" -d '{"email": "you@example.com"}'
+# Always returns the same generic message whether or not the email exists —
+# that's intentional, prevents enumerating registered accounts.
+
+# Complete the reset (token comes from the emailed link's ?token= query param):
+curl -X POST https://<instance-ip>.nip.io/auth/reset-password \
+  -H "Content-Type: application/json" \
+  -d '{"token": "<token-from-email-link>", "new_password": "..."}'
+```
+
+**Known limitation**: without a verified domain on Resend, the sandbox
+sender (`onboarding@resend.dev`) can only deliver to the email address that
+owns the Resend account — fine for a personal/small-scale launch, not for
+other users at scale until a domain is verified.
+
+## 14. Local development (unchanged throughout)
 
 ```bash
 cp .env.example .env
@@ -251,7 +285,7 @@ npm run dev                                  # http://localhost:3000
 npm run build                                # verify a production build compiles
 ```
 
-## 14. Git — how the work was committed
+## 15. Git — how the work was committed
 
 ```bash
 git status

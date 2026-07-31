@@ -150,6 +150,13 @@ export default function JobDetailPage() {
         </section>
       )}
 
+      {job.parts && job.result?.explanation && (
+        <section style={{ marginBottom: "2.5rem" }}>
+          <SectionHeading>Explained for you</SectionHeading>
+          <p style={{ whiteSpace: "pre-wrap", fontSize: "0.95rem", lineHeight: 1.7 }}>{job.result.explanation}</p>
+        </section>
+      )}
+
       {job.parts ? (
         job.parts.map((part) => (
           <section key={part.part_index} style={{ marginBottom: "2.5rem" }}>
@@ -215,14 +222,6 @@ export default function JobDetailPage() {
               </div>
             )}
 
-            {part.explanation && (
-              <div>
-                <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--ink-faint)", marginBottom: "0.5rem" }}>
-                  Explained for you
-                </p>
-                <p style={{ whiteSpace: "pre-wrap", fontSize: "0.95rem", lineHeight: 1.7 }}>{part.explanation}</p>
-              </div>
-            )}
           </section>
         ))
       ) : (

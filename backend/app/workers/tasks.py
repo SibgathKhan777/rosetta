@@ -602,15 +602,9 @@ def stitch_part_job(job_id: str, part_index: int) -> None:
         part.transcript_segments = transcript_segments
         part.ocr_events = ocr_events
 
-        if is_vision_llm_enabled() and (transcript or ocr_events):
-            ocr_text = "\n".join(e["text"] for e in ocr_events)
-            metadata = (job.result.job_metadata if job.result else None) or {}
-            base_title = metadata.get("title", "")
-            part_title = f"{base_title} — part {part_index + 1}" if base_title else f"Part {part_index + 1}"
-            # transcript/ocr_text here are only one part's worth of content
-            # (a few minutes), so explanation_max_input_chars essentially
-            # never truncates — unlike the whole-video stitch_job path.
-            part.explanation = generate_explanation(part_title, transcript, ocr_text)
+        # No per-part explanation: a per-slice summary can't actually explain
+        # the video (it only ever saw ~15 minutes of it, no earlier context) —
+        # see _finalize_long_job for the one whole-video explanation instead.
 
         if total_chunks > 0 and failed_chunks == total_chunks:
             part.status = JobPartStatus.FAILED.value
@@ -644,10 +638,44 @@ def stitch_part_job(job_id: str, part_index: int) -> None:
         db.close()
 
 
+def _generate_whole_video_explanation(db, job: Job, parts: list) -> None:
+    """One explanation covering the ENTIRE video, not just one part — a
+    per-part explanation can't do this since each part only ever saw its own
+    ~15 minutes with no earlier context (e.g. it can't know who a character
+    is if they were introduced two parts earlier). Built from every part's
+    own transcript/OCR rather than the raw whole-video text, with a fair
+    per-part character budget, so this still can't reintroduce the
+    truncation bug this per-part design exists to avoid.
+    """
+    if not is_vision_llm_enabled() or not parts:
+        return
+
+    per_part_budget = max(1, settings.explanation_max_input_chars // len(parts))
+    transcript_chunks = []
+    ocr_chunks = []
+    for p in parts:
+        if p.transcript:
+            transcript_chunks.append(f"[Part {p.part_index + 1}] {p.transcript[:per_part_budget]}")
+        if p.ocr_events:
+            ocr_text = "\n".join(e["text"] for e in p.ocr_events)[:per_part_budget]
+            ocr_chunks.append(f"[Part {p.part_index + 1}]\n{ocr_text}")
+
+    if not transcript_chunks and not ocr_chunks:
+        return
+
+    result = job.result
+    if result is None:
+        result = JobResult(job_id=job.id)
+        db.add(result)
+    title = (result.job_metadata or {}).get("title", "")
+    result.explanation = generate_explanation(title, "\n\n".join(transcript_chunks), "\n\n".join(ocr_chunks))
+
+
 def _finalize_long_job(db, job: Job) -> None:
     """Runs once, triggered by whichever stitch_part_job call observes the
     atomic remaining-parts counter hit zero — sets the parent job's overall
-    status and does the single shared-S3-prefix cleanup for the whole video.
+    status, generates the one whole-video explanation, and does the single
+    shared-S3-prefix cleanup for the whole video.
     """
     parts = db.query(JobPart).filter_by(job_id=job.id).order_by(JobPart.part_index).all()
     failed_parts = [p for p in parts if p.status == JobPartStatus.FAILED.value]
@@ -660,6 +688,7 @@ def _finalize_long_job(db, job: Job) -> None:
         if failed_parts:
             failed_labels = ", ".join(str(p.part_index + 1) for p in failed_parts)
             job.error_message = f"Part(s) {failed_labels} failed; other parts completed"
+        _generate_whole_video_explanation(db, job, [p for p in parts if p.status == JobPartStatus.DONE.value])
     job.completed_at = datetime.now(timezone.utc)
     db.commit()
     delete_prefix(f"jobs/{job.id}/")

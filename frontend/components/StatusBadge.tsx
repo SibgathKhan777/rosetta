@@ -1,23 +1,20 @@
-const COLORS: Record<string, string> = {
-  queued: "#888",
-  downloading: "#0ea5e9",
-  processing: "#0ea5e9",
-  stitching: "#0ea5e9",
-  done: "#22c55e",
-  failed: "#ef4444",
+const COLOR_VAR: Record<string, string> = {
+  queued: "var(--ink-faint)",
+  downloading: "var(--gold)",
+  processing: "var(--gold)",
+  stitching: "var(--gold)",
+  done: "var(--patina)",
+  failed: "var(--danger)",
 };
 
 export default function StatusBadge({ status }: { status: string }) {
-  const color = COLORS[status] || "#888";
+  const color = COLOR_VAR[status] || "var(--ink-faint)";
   return (
     <span
+      className="pill"
       style={{
-        display: "inline-block",
-        padding: "0.15rem 0.6rem",
-        borderRadius: 999,
-        fontSize: "0.8rem",
-        border: `1px solid ${color}`,
         color,
+        borderColor: color,
         textTransform: "capitalize",
       }}
     >

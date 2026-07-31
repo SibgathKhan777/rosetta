@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Video Extraction Platform",
-  description: "Paste a video URL, get transcript + on-screen text + metadata",
+  title: "Rosetta — decode any video",
+  description: "Paste a video URL, get the transcript, the on-screen text, and the teaching behind it.",
 };
 
 export default function RootLayout({

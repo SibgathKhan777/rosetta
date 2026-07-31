@@ -1,10 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, getToken, clearToken, ApiError, JobListItem, Credits } from "@/lib/api";
+import { api, getToken, clearToken, ApiError, JobListItem, JobStatus, Credits } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
+
+const TERMINAL_STATUSES = new Set(["done", "failed"]);
+const STAGE_LABEL: Record<string, string> = {
+  download: "Reading the source",
+  split: "Splitting into chunks",
+  transcription: "Listening",
+  ocr: "Reading on-screen text",
+  stitching: "Stitching the decode",
+};
+
+function truncate(text: string | null | undefined, n: number): string {
+  if (!text) return "";
+  const clean = text.trim().replace(/\s+/g, " ");
+  return clean.length > n ? clean.slice(0, n).trimEnd() + "…" : clean;
+}
+
+function currentStageLabel(job: JobStatus): string {
+  const active = job.progress.find((p) => p.percent_complete < 100);
+  const stage = active?.stage || job.progress[job.progress.length - 1]?.stage;
+  return (stage && STAGE_LABEL[stage]) || "Decoding";
+}
 
 export default function HomePage() {
   const router = useRouter();
@@ -13,8 +34,9 @@ export default function HomePage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<JobListItem[]>([]);
-  const [loadingJobs, setLoadingJobs] = useState(true);
+  const [details, setDetails] = useState<Record<string, JobStatus>>({});
   const [credits, setCredits] = useState<Credits | null>(null);
+  const threadEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!getToken()) {
@@ -33,8 +55,6 @@ export default function HomePage() {
         clearToken();
         router.push("/login");
       }
-    } finally {
-      setLoadingJobs(false);
     }
   }
 
@@ -47,16 +67,54 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authed]);
 
+  // Poll live detail (stage progress + result) for any job that isn't
+  // finished yet, and fetch once for finished jobs missing a cached detail
+  // (so the result-preview card has something to render).
+  useEffect(() => {
+    if (!authed || jobs.length === 0) return;
+    let cancelled = false;
+
+    async function fetchOne(jobId: string) {
+      try {
+        const data = await api.getJob(jobId);
+        if (!cancelled) setDetails((prev) => ({ ...prev, [jobId]: data }));
+      } catch {
+        // best-effort — a missed poll just tries again next tick
+      }
+    }
+
+    function tick() {
+      for (const j of jobs) {
+        const cached = details[j.job_id];
+        if (!cached || !TERMINAL_STATUSES.has(cached.status)) {
+          fetchOne(j.job_id);
+        }
+      }
+    }
+
+    tick();
+    const interval = setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authed, jobs]);
+
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [jobs.length]);
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      const { job_id } = await api.createJob(url);
+      await api.createJob(url);
       setUrl("");
-      router.push(`/jobs/${job_id}`);
+      await refreshJobs();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to submit job");
+      setError(err instanceof ApiError ? err.message : "Couldn't start that decode.");
     } finally {
       setSubmitting(false);
       api.getCredits().then(setCredits).catch(() => {});
@@ -71,67 +129,176 @@ export default function HomePage() {
   if (!authed) return null;
 
   return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: "2rem 1rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
-        <h1>Video Extraction</h1>
-        <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", height: "100vh" }}>
+      <header
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "0.9rem 1.5rem",
+          borderBottom: "1px solid var(--rule)",
+          background: "var(--stone-raised)",
+        }}
+      >
+        <span className="wordmark" style={{ fontSize: "1.1rem" }}>Rosetta</span>
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
           {credits && (
-            <span style={{ fontSize: "0.85rem", opacity: 0.8 }}>
+            <span className="pill" style={{ color: "var(--ink-dim)" }}>
               {credits.credits_remaining} credits
             </span>
           )}
-          <button onClick={logout}>Log out</button>
+          <button className="btn" onClick={logout}>Log out</button>
+        </div>
+      </header>
+
+      <main
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "2rem 1.25rem 1rem",
+        }}
+      >
+        <div style={{ maxWidth: 640, margin: "0 auto", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          {jobs.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "3rem 1rem", color: "var(--ink-dim)" }}>
+              <p style={{ fontFamily: "var(--serif)", fontSize: "1.15rem", color: "var(--ink)", marginBottom: "0.5rem" }}>
+                Paste a video below to begin.
+              </p>
+              <p style={{ fontSize: "0.9rem" }}>YouTube, Instagram, TikTok, X — the transcript, the on-screen text, and the teaching behind it.</p>
+            </div>
+          ) : (
+            [...jobs].reverse().map((job) => (
+              <JobTurn key={job.job_id} job={job} detail={details[job.job_id]} />
+            ))
+          )}
+          <div ref={threadEndRef} />
+        </div>
+      </main>
+
+      <form
+        onSubmit={onSubmit}
+        style={{
+          display: "flex",
+          gap: "0.6rem",
+          padding: "1rem 1.25rem",
+          borderTop: "1px solid var(--rule)",
+          background: "var(--stone-raised)",
+        }}
+      >
+        <div style={{ maxWidth: 640, margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+          {error && <p style={{ color: "var(--danger)", fontSize: "0.85rem" }}>{error}</p>}
+          <div style={{ display: "flex", gap: "0.6rem" }}>
+            <input
+              className="field"
+              type="url"
+              placeholder="Paste a video URL — YouTube, Instagram, TikTok, X…"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              required
+              style={{ flex: 1 }}
+            />
+            <button className="btn-primary" type="submit" disabled={submitting}>
+              {submitting ? "Sending…" : "Extract"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function JobTurn({ job, detail }: { job: JobListItem; detail?: JobStatus }) {
+  const status = detail?.status ?? job.status;
+  const isTerminal = TERMINAL_STATUSES.has(status);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+      {/* user turn */}
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <div
+          className="panel"
+          style={{
+            maxWidth: "85%",
+            padding: "0.65rem 1rem",
+            background: "var(--gold-soft)",
+            borderColor: "var(--gold-line)",
+          }}
+        >
+          <p style={{ fontSize: "0.9rem", wordBreak: "break-all" }}>{job.url}</p>
+          {job.platform && (
+            <p style={{ fontSize: "0.72rem", color: "var(--ink-faint)", marginTop: "0.2rem", textTransform: "capitalize" }}>
+              {job.platform}
+            </p>
+          )}
         </div>
       </div>
 
-      <form onSubmit={onSubmit} style={{ display: "flex", gap: "0.5rem", marginBottom: "2rem" }}>
-        <input
-          type="url"
-          placeholder="Paste a video URL (YouTube, Instagram, TikTok, X...)"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          required
-          style={{ flex: 1 }}
-        />
-        <button type="submit" disabled={submitting}>
-          {submitting ? "Submitting..." : "Extract"}
-        </button>
-      </form>
-      {error && <p style={{ color: "#e5484d", marginTop: "-1rem", marginBottom: "1rem" }}>{error}</p>}
+      {/* assistant turn */}
+      <div style={{ display: "flex", justifyContent: "flex-start" }}>
+        <div className="panel" style={{ maxWidth: "90%", width: "100%", padding: "1.1rem 1.25rem" }}>
+          {status === "failed" ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                <span style={{ fontSize: "0.85rem", color: "var(--danger)", fontWeight: 650 }}>Couldn&apos;t finish this decode</span>
+                <StatusBadge status={status} />
+              </div>
+              <p style={{ fontSize: "0.85rem", color: "var(--ink-dim)" }}>
+                {detail?.error_message || "Something went wrong partway through."}
+              </p>
+            </>
+          ) : !isTerminal ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.7rem" }}>
+                <span style={{ fontSize: "0.85rem", color: "var(--ink-dim)" }}>
+                  {detail ? currentStageLabel(detail) : "Starting up"}…
+                </span>
+                <StatusBadge status={status} />
+              </div>
+              <div className="shimmer" style={{ height: 10, borderRadius: 6, marginBottom: "0.4rem" }} />
+              <div className="shimmer" style={{ height: 10, borderRadius: 6, width: "70%" }} />
+            </>
+          ) : (
+            <ResultPreview job={job} detail={detail} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-      <h2 style={{ marginBottom: "1rem" }}>Job history</h2>
-      {loadingJobs ? (
-        <p>Loading...</p>
-      ) : jobs.length === 0 ? (
-        <p>No jobs yet — paste a link above to get started.</p>
-      ) : (
-        <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-          {jobs.map((job) => (
-            <li key={job.job_id}>
-              <Link
-                href={`/jobs/${job.job_id}`}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: "1rem",
-                  padding: "0.75rem 1rem",
-                  border: "1px solid #444",
-                  borderRadius: 8,
-                }}
-              >
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {job.url}
-                </span>
-                <span style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexShrink: 0 }}>
-                  {job.platform && <span style={{ fontSize: "0.8rem", opacity: 0.7 }}>{job.platform}</span>}
-                  <StatusBadge status={job.status} />
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
+function ResultPreview({ job, detail }: { job: JobListItem; detail?: JobStatus }) {
+  const result = detail?.result;
+  const title = (result?.metadata?.title as string) || job.url;
+  const ocrCount = result?.ocr_events?.length ?? 0;
+
+  return (
+    <>
+      <h3
+        style={{
+          fontFamily: "var(--serif)",
+          fontSize: "1.05rem",
+          fontWeight: 500,
+          marginBottom: "0.5rem",
+          borderBottom: "1px solid var(--gold-line)",
+          display: "inline-block",
+          paddingBottom: "0.15rem",
+        }}
+      >
+        {title}
+      </h3>
+      {result?.transcript && (
+        <p style={{ fontSize: "0.88rem", color: "var(--ink-dim)", marginBottom: "0.5rem" }}>
+          {truncate(result.transcript, 160)}
+        </p>
       )}
-    </main>
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.8rem" }}>
+        {result?.transcript && <span className="pill">transcript</span>}
+        {ocrCount > 0 && <span className="pill">{ocrCount} on-screen lines</span>}
+        {result?.explanation && <span className="pill" style={{ color: "var(--patina)", borderColor: "var(--patina)" }}>explained</span>}
+      </div>
+      <Link href={`/jobs/${job.job_id}`} style={{ color: "var(--gold)", fontSize: "0.87rem", textDecoration: "underline" }}>
+        Open full decode →
+      </Link>
+    </>
   );
 }

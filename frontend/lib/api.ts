@@ -10,6 +10,7 @@ export type JobResult = {
   transcript_segments: { start: number; end: number; text: string }[] | null;
   ocr_events: { text: string; timestamp: number; confidence: number | null; source?: string }[] | null;
   metadata: Record<string, unknown> | null;
+  explanation: string | null;
 };
 
 export type JobStatus = {

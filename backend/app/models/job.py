@@ -57,5 +57,6 @@ class JobResult(Base):
     transcript_segments: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     ocr_events: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     job_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     job = relationship("Job", back_populates="result")

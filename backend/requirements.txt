@@ -1,12 +1,3 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-
-# Pinned to the CPU-only build (see extra index above) before easyocr is
-# resolved, otherwise pip pulls the default CUDA build and several GB of
-# unused nvidia-* packages — this container has no GPU (easyocr Reader is
-# constructed with gpu=False).
-torch==2.6.0+cpu
-torchvision==0.21.0+cpu
-
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
 sqlalchemy==2.0.36
@@ -24,5 +15,12 @@ rq==2.1.0
 boto3==1.35.79
 yt-dlp==2026.7.4
 faster-whisper==1.2.1
-easyocr==1.7.2
+# ONNX Runtime-based — measured ~6-15x faster than EasyOCR on real dense-text
+# (code/terminal screenshot) frames, CPU-only, no torch dependency needed.
+rapidocr==3.9.2
+onnxruntime==1.28.0
+# Explicit now that easyocr (which pulled it in transitively) is gone —
+# app.services.text_detector uses cv2 directly for EAST text detection.
+opencv-python-headless==5.0.0.93
 openai==2.48.0
+slowapi==0.1.9

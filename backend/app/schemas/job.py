@@ -27,6 +27,7 @@ class JobResultResponse(BaseModel):
     transcript_segments: list[Any] | None = None
     ocr_events: list[Any] | None = None
     metadata: dict[str, Any] | None = None
+    explanation: str | None = None
 
     model_config = {"from_attributes": True}
 

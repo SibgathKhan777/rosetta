@@ -31,26 +31,25 @@ def split_audio(video_path: str, output_dir: str, segment_seconds: int) -> list[
     return [(idx * segment_seconds, os.path.join(output_dir, name)) for idx, name in enumerate(files)]
 
 
-def extract_scene_frames(video_path: str, output_dir: str, scene_threshold: float) -> list[tuple[float, str]]:
-    """Scene-detected frame candidates instead of fixed fps — only extract
-    frames where the visual content actually changes, to avoid thousands of
-    near-duplicate frames on long videos. Always includes the first frame as
-    a baseline (covers static videos with persistent on-screen text that
-    never trips the scene-change filter).
+def extract_interval_frames(video_path: str, output_dir: str, interval_seconds: float) -> list[tuple[float, str]]:
+    """Fixed-interval frame candidates — sampling by time rather than by
+    scene-change means gradual on-screen changes (slow scrolling, typing)
+    are never missed just because the overall scene never "cuts". These are
+    candidates only: app.services.text_detector.has_text filters them down
+    to frames actually worth OCR'ing.
     """
     pattern = os.path.join(output_dir, "frame_%06d.png")
-    select_expr = f"eq(n\\,0)+gt(scene\\,{scene_threshold})"
     cmd = [
         "ffmpeg",
         "-y",
         "-i", video_path,
-        "-vf", f"select='{select_expr}',showinfo",
+        "-vf", f"fps=1/{interval_seconds},showinfo",
         "-vsync", "vfr",
         pattern,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg scene detection failed: {result.stderr[-2000:]}")
+        raise RuntimeError(f"ffmpeg interval frame extraction failed: {result.stderr[-2000:]}")
 
     timestamps = [float(m) for m in re.findall(r"pts_time:([\d.]+)", result.stderr)]
     frames = sorted(f for f in os.listdir(output_dir) if f.startswith("frame_"))

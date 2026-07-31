@@ -12,6 +12,7 @@ from app.database import SessionLocal
 from app.models.job import Job, JobResult, JobStatus
 from app.queue.redis_conn import default_queue
 from app.services.credits import deduct_credits, estimate_cost
+from app.services.explanation import generate_explanation
 from app.services.job_state import (
     clear_job_state,
     get_total,
@@ -20,13 +21,32 @@ from app.services.job_state import (
     set_total,
     store_chunk_result,
 )
-from app.services.media import extract_scene_frames, split_audio
+from app.services.media import extract_interval_frames, split_audio
 from app.services.ocr import ocr_frame
 from app.services.progress import upsert_progress
+from app.services.text_detector import has_text
 from app.services.transcription import transcribe_audio
 from app.services.vision_llm import escalate_frame
 from app.services.vision_llm import is_enabled as is_vision_llm_enabled
 from app.storage.s3 import delete_prefix, download_file, upload_file
+
+
+def _select_text_frames(candidates: list[tuple[float, str]]) -> list[tuple[float, str]]:
+    """Filter densely-sampled candidate frames down to ones that actually
+    contain text (via EAST), deduping consecutive text frames that are too
+    close together in time — otherwise a long static on-screen text block
+    would pass every interval sample and flood OCR with near-duplicates.
+    """
+    selected = []
+    last_kept_ts = None
+    for timestamp, path in candidates:
+        if not has_text(path):
+            continue
+        if last_kept_ts is not None and (timestamp - last_kept_ts) < settings.min_frame_gap_seconds:
+            continue
+        selected.append((timestamp, path))
+        last_kept_ts = timestamp
+    return selected
 
 
 def _frame_badness(frame_summary: dict) -> float:
@@ -154,7 +174,7 @@ def download_job(job_id: str) -> None:
             # gate (see app/services/credits.py).
             deduct_credits(db, job.user_id, estimate_cost(duration))
 
-            default_queue.enqueue(split_job, job_id, job_timeout="15m")
+            default_queue.enqueue(split_job, job_id, job_timeout="20m")
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
     finally:
@@ -189,7 +209,8 @@ def split_job(job_id: str) -> None:
             os.makedirs(frames_dir, exist_ok=True)
 
             audio_chunks = split_audio(source_path, audio_dir, settings.audio_chunk_seconds)
-            scene_frames = extract_scene_frames(source_path, frames_dir, settings.scene_change_threshold)
+            candidate_frames = extract_interval_frames(source_path, frames_dir, settings.frame_sample_interval_seconds)
+            text_frames = _select_text_frames(candidate_frames)
 
             upsert_progress(db, job.id, "split", 50.0)
 
@@ -200,7 +221,7 @@ def split_job(job_id: str) -> None:
                 audio_chunk_keys.append((offset, key))
 
             frame_keys = []
-            for idx, (timestamp, local_path) in enumerate(scene_frames):
+            for idx, (timestamp, local_path) in enumerate(text_frames):
                 key = f"jobs/{job_id}/frames/frame_{idx:06d}.png"
                 upload_file(local_path, key)
                 frame_keys.append((timestamp, key))
@@ -227,7 +248,11 @@ def split_job(job_id: str) -> None:
                 )
                 dependency_jobs.append(j)
             for idx, batch in enumerate(frame_batches):
-                j = default_queue.enqueue(ocr_batch_job, job_id, idx, batch, job_timeout="15m")
+                # 15m wasn't enough margin: text-dense frames (the new
+                # selection favors these) pushed a 20-frame EasyOCR batch
+                # past 900s and got killed mid-batch, losing that batch's
+                # OCR results entirely.
+                j = default_queue.enqueue(ocr_batch_job, job_id, idx, batch, job_timeout="30m")
                 dependency_jobs.append(j)
 
             if dependency_jobs:
@@ -369,6 +394,11 @@ def stitch_job(job_id: str) -> None:
         result.transcript = transcript
         result.transcript_segments = transcript_segments
         result.ocr_events = ocr_events
+
+        if is_vision_llm_enabled() and (transcript or ocr_events):
+            ocr_text = "\n".join(e["text"] for e in ocr_events)
+            title = (result.job_metadata or {}).get("title", "")
+            result.explanation = generate_explanation(title, transcript, ocr_text)
 
         if total_chunks > 0 and failed_chunks == total_chunks:
             job.status = JobStatus.FAILED.value

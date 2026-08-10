@@ -186,9 +186,13 @@ def list_jobs(db: Session = Depends(get_db), user: User = Depends(get_current_us
     ]
 
 
-@router.get("/{job_id}", response_model=JobStatusResponse)
-def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    job = _get_owned_job(db, job_id, user)
+def build_job_status_response(job: Job) -> JobStatusResponse:
+    """Shared builder — also used by the WebSocket endpoint (app/api/ws.py)
+    so both the REST and push paths return byte-identical shapes. Field
+    names don't line up 1:1 with the ORM model (job_id vs id, progress vs
+    progress_entries, nested result/parts transforms), so this can't be
+    replaced with a plain model_validate(job).
+    """
     return JobStatusResponse(
         job_id=job.id,
         url=job.url,
@@ -203,6 +207,12 @@ def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depen
         result=_to_result_response(job.result),
         parts=_to_parts_response(job),
     )
+
+
+@router.get("/{job_id}", response_model=JobStatusResponse)
+def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    job = _get_owned_job(db, job_id, user)
+    return build_job_status_response(job)
 
 
 @router.get("/{job_id}/result", response_model=JobResultResponse)

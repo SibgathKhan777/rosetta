@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, getToken, ApiError, JobStatus } from "@/lib/api";
+import { useJobSocket } from "@/lib/useJobSocket";
 import StatusBadge from "@/components/StatusBadge";
 
 const TERMINAL_STATUSES = new Set(["done", "failed"]);
@@ -19,6 +20,11 @@ export default function JobDetailPage() {
   const router = useRouter();
   const [job, setJob] = useState<JobStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Live push when available; the 2s/15s polling below never stops being
+  // the source of truth — this only slows it down while the socket is
+  // healthy, and speeds it back up the instant it isn't.
+  const wsConnected = useJobSocket(id, (data) => setJob(data));
 
   useEffect(() => {
     if (!getToken()) {
@@ -48,12 +54,12 @@ export default function JobDetailPage() {
     }
 
     poll();
-    interval = setInterval(poll, 2000);
+    interval = setInterval(poll, wsConnected ? 15000 : 2000);
     return () => {
       cancelled = true;
       if (interval) clearInterval(interval);
     };
-  }, [id, router]);
+  }, [id, router, wsConnected]);
 
   if (error) {
     return (

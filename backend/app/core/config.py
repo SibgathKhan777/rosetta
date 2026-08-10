@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     fallback_llm_base_url: str = "https://openrouter.ai/api/v1"
     fallback_llm_model: str = "openai/gpt-oss-20b:free"
 
+    # --- Explanation via AWS Lambda (stage 20) ---
+    # Moves the explanation LLM call (only ~2 calls/job, not a hot path) off
+    # the always-on EC2 worker onto a dedicated Lambda — a small package
+    # (just the openai client), fast cold start, nothing to bundle, unlike
+    # OCR/transcription which stay in-process. Empty name means "not
+    # deployed in this environment": generate_explanation_via_lambda() calls
+    # straight through to the existing in-process generate_explanation()
+    # with zero extra setup — this is exactly how local dev (no AWS creds
+    # at all) keeps working unchanged.
+    explanation_lambda_function_name: str = ""
+    aws_region: str = "ap-south-1"
+
     # CPU-friendly per the brief; "base" balances speed/accuracy for dev.
     whisper_model_size: str = "base"
     whisper_compute_type: str = "int8"

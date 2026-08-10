@@ -14,7 +14,7 @@ from app.database import SessionLocal
 from app.models.job import Job, JobPart, JobPartStatus, JobResult, JobStatus
 from app.queue.redis_conn import default_queue
 from app.services.credits import deduct_credits, estimate_cost
-from app.services.explanation import generate_explanation
+from app.services.lambda_client import generate_explanation_via_lambda
 from app.services.job_state import (
     clear_job_state,
     decrement_remaining,
@@ -27,7 +27,7 @@ from app.services.job_state import (
 )
 from app.services.media import extract_interval_frames, split_audio
 from app.services.ocr import ocr_frame
-from app.services.progress import upsert_progress
+from app.services.progress import publish_job_event, upsert_progress
 from app.services.text_detector import has_text
 from app.services.transcription import transcribe_audio
 from app.services.vision_llm import escalate_frame
@@ -134,6 +134,7 @@ def download_job(job_id: str) -> None:
                 job.status = JobStatus.FAILED.value
                 job.error_message = str(exc)[:2000]
                 db.commit()
+                publish_job_event(job.id, {"type": "job_done", "status": job.status})
                 return
 
             upsert_progress(db, job.id, "download", 60.0)
@@ -143,6 +144,7 @@ def download_job(job_id: str) -> None:
                 job.status = JobStatus.FAILED.value
                 job.error_message = "yt-dlp reported success but produced no output file"
                 db.commit()
+                publish_job_event(job.id, {"type": "job_done", "status": job.status})
                 return
             downloaded_path = os.path.join(tmp_dir, candidates[0])
 
@@ -244,6 +246,7 @@ def split_job(job_id: str) -> None:
             job.status = JobStatus.FAILED.value
             job.error_message = f"Splitting failed: {exc}"[:2000]
             db.commit()
+            publish_job_event(job.id, {"type": "job_done", "status": job.status})
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
     finally:
@@ -533,7 +536,7 @@ def stitch_job(job_id: str) -> None:
         if is_vision_llm_enabled() and (transcript or ocr_events):
             ocr_text = "\n".join(e["text"] for e in ocr_events)
             title = (result.job_metadata or {}).get("title", "")
-            result.explanation = generate_explanation(title, transcript, ocr_text)
+            result.explanation = generate_explanation_via_lambda(title, transcript, ocr_text)
 
         if total_chunks > 0 and failed_chunks == total_chunks:
             job.status = JobStatus.FAILED.value
@@ -546,6 +549,7 @@ def stitch_job(job_id: str) -> None:
 
         db.commit()
         upsert_progress(db, job.id, "stitching", 100.0)
+        publish_job_event(job.id, {"type": "job_done", "status": job.status})
 
         clear_job_state(job_id, "transcript", total_chunks)
         clear_job_state(job_id, "ocr", total_batches)
@@ -615,6 +619,7 @@ def stitch_part_job(job_id: str, part_index: int) -> None:
                 part.error_message = f"{failed_chunks}/{total_chunks} audio chunks failed; this part's transcript is partial"
         part.completed_at = datetime.now(timezone.utc)
         db.commit()
+        publish_job_event(job.id, {"type": "part_update", "part_index": part_index, "status": part.status})
 
         clear_job_state(state_key, "transcript", total_chunks)
         clear_job_state(state_key, "ocr", total_batches)
@@ -668,7 +673,7 @@ def _generate_whole_video_explanation(db, job: Job, parts: list) -> None:
         result = JobResult(job_id=job.id)
         db.add(result)
     title = (result.job_metadata or {}).get("title", "")
-    result.explanation = generate_explanation(title, "\n\n".join(transcript_chunks), "\n\n".join(ocr_chunks))
+    result.explanation = generate_explanation_via_lambda(title, "\n\n".join(transcript_chunks), "\n\n".join(ocr_chunks))
 
 
 def _finalize_long_job(db, job: Job) -> None:
@@ -691,4 +696,5 @@ def _finalize_long_job(db, job: Job) -> None:
         _generate_whole_video_explanation(db, job, [p for p in parts if p.status == JobPartStatus.DONE.value])
     job.completed_at = datetime.now(timezone.utc)
     db.commit()
+    publish_job_event(job.id, {"type": "job_done", "status": job.status})
     delete_prefix(f"jobs/{job.id}/")

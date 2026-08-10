@@ -276,6 +276,93 @@ instance, that wasn't a real loss (everything was already effectively
 serialized by having one worker); it just changed *when* each part's result
 becomes visible, from "all at the very end" to "as each one finishes."
 
+## 13. Explanation via AWS Lambda
+
+Moves the explanation LLM call off the always-on EC2 worker onto a
+dedicated Lambda (`video-platform-explanation`, zip deployment, `arm64`,
+256MB/30s, no VPC — a VPC-attached Lambda needs a NAT gateway for outbound
+internet, a real per-hour cost this project has never paid). Set
+`EXPLANATION_LAMBDA_FUNCTION_NAME=video-platform-explanation` and
+`AWS_REGION=ap-south-1` in `.env.production`; leave the name blank to
+disable (the worker then calls the same logic in-process, exactly as
+before this stage — this is also how local dev, which has no AWS
+credentials at all, keeps working unchanged).
+
+The EC2 instance had never made a real AWS API call before this (its S3
+client points at the local `minio` container, not real S3), so this needed
+new IAM setup:
+
+```bash
+# Lambda's own execution role (CloudWatch Logs only)
+aws iam create-role --role-name video-platform-explanation-lambda-role \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+aws iam attach-role-policy --role-name video-platform-explanation-lambda-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+# EC2's role to invoke exactly this one function, nothing else
+aws iam create-role --role-name video-platform-explanation-invoker \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+aws iam put-role-policy --role-name video-platform-explanation-invoker \
+  --policy-name invoke-explanation-lambda --policy-document file://invoke-policy.json
+aws iam create-instance-profile --instance-profile-name video-platform-explanation-invoker
+aws iam add-role-to-instance-profile --instance-profile-name video-platform-explanation-invoker \
+  --role-name video-platform-explanation-invoker
+aws ec2 associate-iam-instance-profile --instance-id <instance-id> \
+  --iam-instance-profile Name=video-platform-explanation-invoker
+```
+
+Associating an instance profile with an already-running instance needs no
+stop/replace — confirmed directly, no downtime.
+
+**Required fix, not optional — IMDS hop limit.** The worker runs inside a
+Docker container, not directly on the EC2 host. IMDSv2's default hop limit
+(1) is one hop too few for a containerized process reaching the instance
+metadata service through the extra Docker bridge NAT hop — `boto3` inside
+the `worker` container silently fails to find credentials, which looks
+identical to "not deployed yet" since the invoke-with-fallback design
+swallows the error. Must run:
+```bash
+aws ec2 modify-instance-metadata-options --instance-id <instance-id> \
+  --http-put-response-hop-limit 2 --http-tokens required
+```
+Verify it actually worked (don't just trust it): `docker compose ...
+exec worker python -c "import boto3; print(boto3.client('sts').get_caller_identity())"`
+should print the assumed role's ARN, not a credentials error.
+
+**Cost**: Lambda's free tier (1M requests + 400,000 GB-seconds/month) is
+permanent, not a 12-month intro tier. At ~2 explanation calls/job, this
+stays free at any volume this project is realistically going to see.
+
+## 14. Real-time job/part status push (WebSocket)
+
+`GET /ws/jobs/{job_id}?token=<jwt>` pushes job/part status updates the
+instant they happen server-side, bridged from the RQ worker (a separate
+process/container) to the FastAPI process via Redis pub/sub — the same
+Redis already used for RQ and `job_state.py`. No new env vars, no Caddy
+config change (`reverse_proxy` passes through WebSocket upgrades
+automatically since Caddy v2) — deploy with the same `docker compose ...
+up -d --build api worker` used for every other stage (both containers,
+since the worker publishes and the API subscribes).
+
+This is additive to the existing 2s polling, not a replacement: the
+frontend's polling interval just slows down to 15s while the socket is
+healthy, and snaps back to 2s automatically the instant it drops (first-
+connect failure or any close) — so a network/proxy that blocks WebSocket
+entirely degrades to exactly today's behavior, not a broken page.
+
+Verify a real handshake after deploying — don't just trust the Caddy
+passthrough claim: open a job's detail page and watch the browser's
+Network tab for `101 Switching Protocols`, or from a shell:
+```bash
+python3 -c "
+import asyncio, websockets
+async def main():
+    async with websockets.connect('wss://<domain>/ws/jobs/<job-id>?token=<jwt>') as ws:
+        print(await ws.recv())
+asyncio.run(main())
+"
+```
+
 ## Known limitation: YouTube blocks AWS's IP range specifically
 
 Unlike Instagram (confirmed working directly from this deployment), YouTube

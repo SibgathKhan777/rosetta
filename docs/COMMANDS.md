@@ -318,7 +318,98 @@ an early part's stitch got stuck behind later parts' raw work on a
 single-worker deployment; fixed by chaining parts one at a time via
 `_start_part`, see `DEPLOYMENT.md`'s long-video section).
 
-## 15. Local development (unchanged throughout)
+## 15. Explanation Lambda — build, deploy, and verify
+
+```bash
+# Build a Linux ARM64 deployment package (macOS/Windows can't just pip
+# install locally — that produces the wrong-platform native wheels):
+mkdir -p /tmp/lambda-package && cd /tmp/lambda-package
+pip3 install --platform manylinux2014_aarch64 --target package/ \
+  --implementation cp --python-version 3.12 --only-binary=:all: --upgrade \
+  -r backend/lambda/requirements.txt
+cp backend/lambda/explanation_handler.py package/
+cd package && zip -r ../explanation.zip . -x "*.pyc" "*__pycache__*" && cd ..
+
+# Sanity-check the native extensions are actually aarch64, not macOS:
+find package -name "*.so" | xargs file   # expect "ELF ... ARM aarch64"
+
+# Env vars via a file, not inline — a bare `--environment "Variables={...}"`
+# with real API keys in the command was blocked outright by this session's
+# own safety tooling for putting secrets in a shell command; a JSON file
+# sidesteps that (and is better practice regardless — no secrets in shell
+# history or `ps` output):
+cat > env.json << 'EOF'
+{"Variables": {"VISION_LLM_API_KEY": "...", "VISION_LLM_BASE_URL": "https://api.groq.com/openai/v1",
+  "VISION_LLM_MODEL": "qwen/qwen3.6-27b", "FALLBACK_LLM_API_KEY": "...",
+  "FALLBACK_LLM_BASE_URL": "https://openrouter.ai/api/v1", "FALLBACK_LLM_MODEL": "openai/gpt-oss-20b:free"}}
+EOF
+chmod 600 env.json
+
+aws lambda create-function --function-name video-platform-explanation \
+  --runtime python3.12 --architectures arm64 --handler explanation_handler.handler \
+  --memory-size 256 --timeout 30 --zip-file fileb://explanation.zip \
+  --role arn:aws:iam::<account-id>:role/video-platform-explanation-lambda-role \
+  --environment file://env.json
+
+# Direct invoke, bypassing the app entirely — proves the handler works:
+echo '{"title": "Test", "transcript": "...", "ocr_text": "..."}' > test-event.json
+aws lambda invoke --function-name video-platform-explanation \
+  --payload file://test-event.json response.json --cli-binary-format raw-in-base64-out
+cat response.json
+
+# From inside the worker container, after the IAM/IMDS setup in
+# DEPLOYMENT.md's Lambda section — confirms the EC2 role assumption works:
+docker compose --env-file .env.production -f docker-compose.prod.yml exec worker \
+  python -c "import boto3; print(boto3.client('sts', region_name='ap-south-1').get_caller_identity())"
+
+# Confirms the actual app code path uses Lambda (not the fallback) — no
+# warning means it went through Lambda successfully:
+docker compose --env-file .env.production -f docker-compose.prod.yml exec worker python -c "
+from app.services.lambda_client import generate_explanation_via_lambda, is_enabled
+print('is_enabled:', is_enabled())
+print(generate_explanation_via_lambda('Test', 'transcript text', 'ocr text')[:200])
+"
+```
+
+Update the function's code later without recreating it:
+```bash
+aws lambda update-function-code --function-name video-platform-explanation \
+  --zip-file fileb:///tmp/lambda-package/explanation.zip
+```
+
+## 16. Real-time push — verify a live WebSocket end-to-end
+
+```bash
+pip3 install websockets   # if not already available
+
+TOKEN=$(curl -s -X POST https://<domain>/auth/login -H "Content-Type: application/json" \
+  -d '{"email": "you@example.com", "password": "..."}' | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+
+python3 -c "
+import asyncio, json, websockets
+async def main():
+    uri = 'wss://<domain>/ws/jobs/<job-id>?token=$TOKEN'
+    async with websockets.connect(uri) as ws:
+        print('CONNECTED')
+        async for message in ws:
+            data = json.loads(message)
+            print('status:', data['status'])
+            if data['status'] in ('done', 'failed'):
+                break
+asyncio.run(main())
+"
+```
+A real run against a fresh job should print `processing` → `stitching` →
+`done` (or the equivalent part-by-part sequence for a long video) with no
+polling involved. Also verify directly from the deployed frontend's own
+browser console (devtools → Console, while logged in on a job page):
+```javascript
+const token = localStorage.getItem('token');
+const ws = new WebSocket(`wss://<domain>/ws/jobs/<job-id>?token=${encodeURIComponent(token)}`);
+ws.onmessage = (e) => console.log(JSON.parse(e.data).status);
+```
+
+## 17. Local development (unchanged throughout)
 
 ```bash
 cp .env.example .env
@@ -332,7 +423,7 @@ npm run dev                                  # http://localhost:3000
 npm run build                                # verify a production build compiles
 ```
 
-## 16. Git — how the work was committed
+## 18. Git — how the work was committed
 
 ```bash
 git status

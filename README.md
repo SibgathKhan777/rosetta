@@ -129,6 +129,23 @@ including a 45-minute long-form test.
     the whole video was done. Caught and fixed via a real ~82-minute
     production test (not just local), confirmed with worker logs showing
     part 1's work only starting after part 0 fully completed — **done**
+18. Explanation generation moved to AWS Lambda (`video-platform-explanation`,
+    zip deployment, ARM64/256MB), invoked from the EC2 worker via an IAM
+    instance profile — falls straight back to the existing in-process call
+    on any invoke failure (no profile, function not deployed, no AWS creds
+    in local dev), so every environment that worked before keeps working
+    unchanged; only a correctly authorized EC2 instance actually offloads
+    the call — **done**, verified live (confirmed via `boto3` assuming the
+    instance role inside the worker container, and a real job producing
+    its explanation via Lambda with zero fallback warnings in the logs)
+19. Real-time job/part status push over WebSocket (`GET /ws/jobs/{id}`),
+    bridged from the RQ worker to the FastAPI process via Redis pub/sub —
+    additive to the existing polling, not a replacement: polling just slows
+    down while the socket is healthy and snaps back to its original
+    interval the instant it drops — **done**, verified with a real job:
+    a WebSocket client (and, separately, the actual deployed Vercel
+    frontend's own browser context) received live `processing` →
+    `stitching` → `done` pushes with no polling involved
 
 ## Frontend local development
 
